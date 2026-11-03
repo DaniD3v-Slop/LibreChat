@@ -1,7 +1,7 @@
 import { useMemo } from 'react';
 import { useAtomValue } from 'jotai';
+import { useSearchResultsByTurn } from '@librechat/chat/components';
 import type { TAttachment } from 'librechat-data-provider';
-import { useSearchResultsByTurn } from './useSearchResultsByTurn';
 import { messageAttachmentsMapAtom } from '~/hooks/SSE/atoms';
 import { mergeAttachments } from '~/utils/attachments';
 

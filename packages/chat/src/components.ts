@@ -219,3 +219,6 @@ export {
   SubagentActivityContent,
   SubagentActivityScrollSurface,
 } from './components/subagents/transcript';
+export { default as SubagentConversation } from './components/subagents/conversation';
+export { default as SharedSubagentActivityDialog } from './components/subagents/shared';
+export { useSearchResultsByTurn } from './components/parts/search';

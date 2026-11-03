@@ -381,16 +381,6 @@
       "count": 1
     }
   },
-  "client/src/components/Chat/Subagents/SharedSubagentActivityDialog.tsx": {
-    "shadcn/no-restyle": {
-      "count": 2
-    }
-  },
-  "client/src/components/Chat/Subagents/SubagentConversation.tsx": {
-    "shadcn/require-static-classes": {
-      "count": 1
-    }
-  },
   "client/src/components/Chat/Subagents/SubagentThreadPanel.tsx": {
     "shadcn/no-restyle": {
       "count": 7
@@ -1393,6 +1383,16 @@
     },
     "shadcn/no-restyle": {
       "count": 4
+    }
+  },
+  "packages/chat/src/components/subagents/conversation.tsx": {
+    "shadcn/require-static-classes": {
+      "count": 1
+    }
+  },
+  "packages/chat/src/components/subagents/shared.tsx": {
+    "shadcn/no-restyle": {
+      "count": 2
     }
   },
   "packages/chat/src/components/subagents/transcript.tsx": {
