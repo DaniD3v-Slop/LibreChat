@@ -1379,11 +1379,6 @@
       "count": 2
     }
   },
-  "packages/chat/src/components/parts/PendingSkillCall.tsx": {
-    "shadcn/no-unknown-classes": {
-      "count": 2
-    }
-  },
   "packages/chat/src/components/parts/ToolCallLimitNotice.tsx": {
     "shadcn/no-restyle": {
       "count": 2
