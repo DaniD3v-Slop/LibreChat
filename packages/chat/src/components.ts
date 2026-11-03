@@ -221,4 +221,5 @@ export {
 } from './components/subagents/transcript';
 export { default as SubagentConversation } from './components/subagents/conversation';
 export { default as SharedSubagentActivityDialog } from './components/subagents/shared';
+export { default as SubagentThreadPanel } from './components/subagents/panel';
 export { useSearchResultsByTurn } from './components/parts/search';
