@@ -547,11 +547,6 @@
       "count": 3
     }
   },
-  "client/src/components/Messages/Content/ActionButton.tsx": {
-    "design/disabled-recipe": {
-      "count": 1
-    }
-  },
   "client/src/components/Messages/Content/Error/parts.tsx": {
     "shadcn/no-arbitrary-values": {
       "count": 1
@@ -1363,6 +1358,11 @@
   },
   "packages/chat/src/components/messages/styles.ts": {
     "shadcn/no-arbitrary-values": {
+      "count": 1
+    }
+  },
+  "packages/chat/src/components/parts/ActionButton.tsx": {
+    "design/disabled-recipe": {
       "count": 1
     }
   },

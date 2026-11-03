@@ -4,6 +4,7 @@ import { ChevronDown } from 'lucide-react';
 import { Button } from '@librechat/client';
 import { unescapeJsonString } from '@librechat/chat';
 import { EModelEndpoint, Constants } from 'librechat-data-provider';
+import { CopyButton, useExpandCollapse } from '@librechat/chat/components';
 import {
   useToolContentRequest,
   useToolContentPending,
@@ -11,10 +12,9 @@ import {
 } from '@librechat/chat/react';
 import type { TMessage } from 'librechat-data-provider';
 import type { TranslationKeys } from '~/hooks';
-import CopyButton from '~/components/Messages/Content/CopyButton';
 import MessageIcon from '~/components/Share/MessageIcon';
-import { useLocalize, useExpandCollapse } from '~/hooks';
 import { useAgentsMapContext } from '~/Providers';
+import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
 interface AgentHandoffProps {

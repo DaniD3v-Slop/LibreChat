@@ -1,10 +1,15 @@
 import { memo, useId, useCallback, useEffect, useMemo, useRef, useState, useContext } from 'react';
 import { useAtomValue } from 'jotai';
 import { useTranslation } from 'react-i18next';
-import { useTimeTick } from '@librechat/chat/react';
 import { ContentTypes } from 'librechat-data-provider';
-import { getOutcomeStatus, isSpanFailed, summarizeSpan } from '@librechat/chat';
 import { Check, CircleX, Lightbulb, ChevronDown, TriangleAlert } from 'lucide-react';
+import { useTimeTick, useLazyCollapseBody, useThrottledValue } from '@librechat/chat/react';
+import {
+  getOutcomeStatus,
+  isSpanFailed,
+  summarizeSpan,
+  getActivityLabelText,
+} from '@librechat/chat';
 import {
   FOLD_RAIL_CLASSES,
   ROW_GLYPH_SLOT,
@@ -18,17 +23,12 @@ import {
   FailedRevealContext,
   FailedRevealPill,
   useFailedRevealTrigger,
+  useExpandCollapse,
+  EXPAND_TRANSITION,
 } from '@librechat/chat/components';
 import type { TAttachment, TMessageContentParts } from 'librechat-data-provider';
 import type { RailHover } from '@librechat/chat/components';
 import type { CSSProperties, ReactNode } from 'react';
-import {
-  useLocalize,
-  useExpandCollapse,
-  useLazyCollapseBody,
-  scheduleMessageContentLayoutReconcile,
-  EXPAND_TRANSITION,
-} from '~/hooks';
 import {
   getFailedLines,
   getLiveActivity,
@@ -36,11 +36,10 @@ import {
   LIVE_ACTIVITY_THROTTLE_MS,
   LIVE_REASONING_HOLD_MS,
 } from './live';
+import { useLocalize, scheduleMessageContentLayoutReconcile } from '~/hooks';
 import useSmoothStreaming from '~/hooks/Messages/useSmoothStreaming';
-import useThrottledValue from '~/hooks/Messages/useThrottledValue';
 import { sandboxStartingByToolCallId } from '~/hooks/SSE/sandbox';
 import { useMCPIconMap, useMCPServerNames } from '~/hooks/MCP';
-import { getActivityLabelText } from '~/utils/activityLabels';
 import { MCPAppViews } from '~/components/MCPUIResource';
 import { MessageSurfaceContext } from '../ui/surface';
 import useClockFormat from '~/hooks/useClockFormat';

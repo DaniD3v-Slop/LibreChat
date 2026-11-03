@@ -2,20 +2,21 @@ import { useMemo, useState, useCallback } from 'react';
 import { Tools } from 'librechat-data-provider';
 import { TooltipAnchor } from '@librechat/client';
 import { resolveToolCallPhase } from '@librechat/chat';
-import { useToolPreparation } from '@librechat/chat/components';
+import { useToolPreparation, useExpandCollapse } from '@librechat/chat/components';
 import { FileText, FileSpreadsheet, FileCode, FileImage, File } from 'lucide-react';
 import {
   toolPanelSpacingClassName,
   useToolExpansion,
   useToolCallIntent,
+  useProgress,
 } from '@librechat/chat/react';
 import type { TAttachment, TFile, PartMetadata } from 'librechat-data-provider';
-import { useLocalize, useProgress, useExpandCollapse } from '~/hooks';
 import { ToolIcon, OutputRenderer, isError } from './ToolOutput';
 import FilePreviewDialog from './FilePreviewDialog';
 import { sortPagesByRelevance, cn } from '~/utils';
 import { useGetFiles } from '~/data-provider';
 import ProgressText from './ProgressText';
+import { useLocalize } from '~/hooks';
 
 interface FileSource {
   fileId: string;
