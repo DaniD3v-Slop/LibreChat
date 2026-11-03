@@ -1,9 +1,12 @@
 import { useMemo } from 'react';
-import { Alert } from '@librechat/client';
+import { Alert, useLocalize } from '@librechat/client';
 import type { MemoryArtifact } from 'librechat-data-provider';
-import { useLocalize } from '~/hooks';
 
-export default function MemoryInfo({ memoryArtifacts }: { memoryArtifacts: MemoryArtifact[] }) {
+export default function MemoryInfo({
+  memoryArtifacts,
+}: {
+  memoryArtifacts: MemoryArtifact[];
+}): React.ReactElement | null {
   const localize = useLocalize();
 
   const { updatedMemories, deletedMemories, errorMessages } = useMemo(() => {

@@ -1,16 +1,15 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { Tools } from 'librechat-data-provider';
-import { ROW_GLYPH_SLOT } from '@librechat/chat/components';
 import { ToolContentRequestContext } from '@librechat/chat/react';
 import { fireEvent, render, screen } from '@testing-library/react';
+import { ROW_GLYPH_SLOT, FailedRevealContext } from '@librechat/chat/components';
 import type {
   TAttachment,
   SearchResultData,
   ValidSource,
   PartMetadata,
 } from 'librechat-data-provider';
-import { FailedRevealContext } from '../reveal';
 import { SearchContext } from '~/Providers';
 import WebSearch from '../WebSearch';
 

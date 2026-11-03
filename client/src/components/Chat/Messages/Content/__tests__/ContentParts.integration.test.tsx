@@ -1,7 +1,7 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
-import { FOLD_GLYPH_CLASS } from '@librechat/chat/components';
 import { Constants, ContentTypes, Tools } from 'librechat-data-provider';
+import { FOLD_GLYPH_CLASS, litFoldPath } from '@librechat/chat/components';
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import type { EventSubmission, TAttachment, TMessageContentParts } from 'librechat-data-provider';
 import type { MCPAppResourceOccurrence } from '~/utils/mcpApps';
@@ -9,7 +9,6 @@ import useAttachmentHandler from '~/hooks/SSE/useAttachmentHandler';
 import useAttachments from '~/hooks/Messages/useAttachments';
 import { ParallelColumns } from '../ParallelContent';
 import ContentParts from '../ContentParts';
-import { litFoldPath } from '../rail';
 import { Text } from '../Parts';
 
 /** No previewed subagent run here leaves a file in doubt, so no owner is ever asked for. */
@@ -131,6 +130,8 @@ jest.mock('lucide-react', () => ({
 }));
 
 jest.mock('@librechat/client', () => ({
+  ...jest.requireActual('@librechat/client'),
+  useLocalize: () => jest.requireMock('~/hooks').useLocalize(),
   useMediaQuery: () => false,
   Button: ({
     children,
@@ -241,11 +242,10 @@ jest.mock('../Image', () => ({
   default: () => <div data-testid="image" />,
 }));
 
-jest.mock('../Container', () => ({
-  __esModule: true,
-  default: ({ children }: { children?: React.ReactNode }) => <div>{children}</div>,
+jest.mock('@librechat/chat/components', () => ({
+  ...jest.requireActual('@librechat/chat/components'),
+  Container: ({ children }: { children?: React.ReactNode }) => <div>{children}</div>,
 }));
-
 jest.mock('../SiblingHeader', () => ({
   __esModule: true,
   default: ({ agentId }: { agentId?: string }) => (

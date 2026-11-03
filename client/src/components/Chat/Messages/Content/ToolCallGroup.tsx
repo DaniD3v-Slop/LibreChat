@@ -1,6 +1,5 @@
 import { useState, useRef, useMemo, useEffect, useContext, useCallback } from 'react';
 import { LoneGroupContext, SoleToolContext } from '@librechat/chat/react';
-import { FOLD_RAIL_CLASSES, ROW_GLYPH_SLOT } from '@librechat/chat/components';
 import { Tools, Constants, ContentTypes, isOpaqueReasoning } from 'librechat-data-provider';
 import { ChevronDown, ListChecks, MessageCircleQuestion, TriangleAlert, Users } from 'lucide-react';
 import {
@@ -12,6 +11,22 @@ import {
   getOutcomeStatus,
   summarizeSpan,
 } from '@librechat/chat';
+import {
+  FOLD_RAIL_CLASSES,
+  ROW_GLYPH_SLOT,
+  FoldRail,
+  RailGlyph,
+  useFoldPath,
+  useRailHover,
+  revealFoldHeader,
+  FoldHeaderContext,
+  FailedRevealContext,
+  FailedRevealPill,
+  useFailedReveal,
+  useFailedRevealTrigger,
+  ToolAuthWarning,
+  ToolAuthWarningContext,
+} from '@librechat/chat/components';
 import type { TAttachment, TMessageContentParts } from 'librechat-data-provider';
 import type { ToolMeta } from '@librechat/chat';
 import type { PartWithIndex } from './ParallelContent';
@@ -22,23 +37,8 @@ import {
   getBatchActivityLabelPart,
   getActivityLabelText,
 } from '~/utils';
-import {
-  FoldRail,
-  RailGlyph,
-  useFoldPath,
-  useRailHover,
-  revealFoldHeader,
-  FoldHeaderContext,
-} from './rail';
-import {
-  FailedRevealContext,
-  FailedRevealPill,
-  useFailedReveal,
-  useFailedRevealTrigger,
-} from './reveal';
 import { useLocalize, useExpandCollapse, scheduleMessageContentLayoutReconcile } from '~/hooks';
 import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
-import { ToolAuthWarning, ToolAuthWarningContext } from './auth';
 import { useMCPIconMap, useMCPServerNames } from '~/hooks/MCP';
 import { AttachmentGroup, ReasoningCompact } from './Parts';
 import { MCPAppViews } from '~/components/MCPUIResource';

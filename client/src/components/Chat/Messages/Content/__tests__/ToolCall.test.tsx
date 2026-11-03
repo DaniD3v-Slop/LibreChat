@@ -1,11 +1,11 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
+import { ToolAuthWarningContext } from '@librechat/chat/components';
 import { Tools, Constants, dataService } from 'librechat-data-provider';
 import { LoneGroupContext, SoleToolContext } from '@librechat/chat/react';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import type { TStartupConfig } from 'librechat-data-provider';
 import { MCPAppsPolicyProvider } from '~/Providers/MCPAppsPolicyContext';
-import { ToolAuthWarningContext } from '../auth';
 import ToolCall from '../ToolCall';
 import { logger } from '~/utils';
 import store from '~/store';
@@ -94,6 +94,7 @@ jest.mock('../Parts', () => ({
 }));
 
 jest.mock('@librechat/client', () => {
+  const actual = jest.requireActual('@librechat/client');
   const DialogPart = ({ children }: { children?: React.ReactNode }) => <div>{children}</div>;
   const DialogButton = ({
     children,
@@ -103,6 +104,8 @@ jest.mock('@librechat/client', () => {
     onClick?: () => void;
   }) => <button onClick={onClick}>{children}</button>;
   return {
+    cn: actual.cn,
+    useLocalize: () => jest.requireMock('~/hooks').useLocalize(),
     Button: ({ children, onClick, ...props }: any) => (
       <button onClick={onClick} {...props}>
         {children}

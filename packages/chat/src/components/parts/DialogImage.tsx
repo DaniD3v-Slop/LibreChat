@@ -2,8 +2,14 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { PanelLeftOpen, PanelLeftClose } from 'lucide';
 import * as DialogPrimitive from '@radix-ui/react-dialog';
 import { X, ArrowDownToLine, RotateCcw } from 'lucide-react';
-import { Button, MorphIcon, TooltipAnchor, useMediaQuery, useRemScale } from '@librechat/client';
-import { useLocalize } from '~/hooks';
+import {
+  Button,
+  MorphIcon,
+  TooltipAnchor,
+  useLocalize,
+  useMediaQuery,
+  useRemScale,
+} from '@librechat/client';
 
 /** The lightbox is z-250 and not an OGDialog, so its tooltips would keep the default 150 and sit behind it. */
 const TOOLTIP_Z_INDEX = 300;
@@ -45,7 +51,7 @@ export default function DialogImage({
   showDetails?: boolean;
   /** Names the dialog and the image for assistive tech, e.g. the file name. */
   title?: string;
-}) {
+}): React.ReactElement | null {
   const localize = useLocalize();
   const [isPromptOpen, setIsPromptOpen] = useState(false);
   const [imageSize, setImageSize] = useState<string | null>(null);
