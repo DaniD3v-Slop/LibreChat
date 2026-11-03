@@ -830,23 +830,27 @@ export default function SubagentThreadPanel({
     }
   }, [focusRequest]);
 
-  /** Escape is handled on the element rather than through the trap's own
-   *  native listener: that listener sits on this `aside`, so it runs BEFORE any
-   *  React handler inside it and would close the whole panel out from under a
-   *  nested popover that meant to dismiss only itself. As a React handler it
-   *  bubbles in DOM order, so an inner control can stop it or mark it handled. */
+  /** Escape is not handed to the trap's own native listener: that listener sits
+   *  on this panel, so it runs BEFORE any React handler inside it and would close
+   *  the whole panel out from under a nested popover that meant to dismiss only
+   *  itself. Listening on the document instead runs after React has dispatched the
+   *  key through the panel, so an inner control can still stop it or mark it handled. */
   useFocusTrap(panelRef, isMobile);
   useEffect(() => {
     if (!isMobile) panelRef.current?.focus({ preventScroll: true });
   }, [focusRequest, isMobile]);
-  const handlePanelKeyDown = useCallback(
-    (event: ReactKeyboardEvent<HTMLElement>) => {
-      if (!isMobile || event.key !== 'Escape' || event.defaultPrevented) return;
+  useEffect(() => {
+    if (!isMobile) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.defaultPrevented) return;
+      const panel = panelRef.current;
+      if (panel == null || !(event.target instanceof Node) || !panel.contains(event.target)) return;
       event.preventDefault();
       close();
-    },
-    [close, isMobile],
-  );
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [close, isMobile]);
 
   useEffect(() => {
     const activeElement = document.activeElement;
@@ -1605,7 +1609,6 @@ export default function SubagentThreadPanel({
       role={isMobile ? 'dialog' : 'region'}
       aria-modal={isMobile || undefined}
       aria-label={localize('com_ui_subagent_thread_panel')}
-      onKeyDown={handlePanelKeyDown}
       className="bg-surface-primary-alt text-text-primary relative flex h-full w-full flex-col overflow-hidden"
     >
       {/* The main chat header's own shape: a 3.25rem bar that floats over the
