@@ -135,6 +135,54 @@ describe('resolveToolApprovalPolicy', () => {
   });
 });
 
+describe('schedule_chat approval policy', () => {
+  test('activates approval for schedule writes without duplicating default rules', () => {
+    const resolved = resolveToolApprovalPolicy({ scheduleChat: true });
+    expect(resolved).toEqual({
+      enabled: true,
+      mode: 'bypass',
+      ask: ['create_schedule', 'update_schedule', 'delete_schedule'],
+    });
+    expect(resolveToolApprovalPolicy({ endpoint: resolved, scheduleChat: true })).toEqual(resolved);
+  });
+
+  test.each(['default', 'dontAsk', 'bypass'] as const)(
+    'honors explicit schedule rules under endpoint %s',
+    (mode) => {
+      const endpoint: TToolApprovalPolicy = {
+        enabled: true,
+        mode,
+        allow: ['*'],
+        deny: ['dangerous_tool'],
+        ask: ['another_tool'],
+      };
+      expect(resolveToolApprovalPolicy({ endpoint, scheduleChat: true })).toEqual({
+        ...endpoint,
+        ask: ['another_tool'],
+      });
+      expect(endpoint.ask).toEqual(['another_tool']);
+    },
+  );
+
+  test('asks by default only for writes not covered by an explicit allow rule', () => {
+    const endpoint: TToolApprovalPolicy = {
+      enabled: true,
+      allow: ['create_*'],
+      ask: ['create_schedule'],
+      deny: ['delete_schedule'],
+    };
+    expect(resolveToolApprovalPolicy({ endpoint, scheduleChat: true })).toEqual({
+      ...endpoint,
+      ask: ['create_schedule', 'update_schedule', 'delete_schedule'],
+    });
+  });
+
+  test('preserves the administrator approval kill switch', () => {
+    const endpoint: TToolApprovalPolicy = { enabled: false };
+    expect(resolveToolApprovalPolicy({ endpoint, scheduleChat: true })).toBe(endpoint);
+  });
+});
+
 describe('isHITLEnabled', () => {
   test('default-off when no policy configured', () => {
     expect(isHITLEnabled(undefined)).toBe(false);

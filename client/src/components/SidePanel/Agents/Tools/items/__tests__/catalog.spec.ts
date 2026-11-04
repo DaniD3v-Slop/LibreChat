@@ -23,6 +23,26 @@ const askInputs: BuildCatalogInputs = {
 };
 
 describe('buildCatalog', () => {
+  test('lists schedule_chat only as a builtin when its own capability and server tool are available', () => {
+    const plugin = makePlugin({ pluginKey: 'schedule_chat', name: 'Schedule chat' });
+    const enabled = {
+      ...emptyInputs,
+      regularTools: [plugin],
+      agentsConfig: { capabilities: ['schedule_chat', AgentCapabilities.tools] },
+    };
+    expect(buildCatalog(enabled).filter((item) => item.id === 'schedule_chat')).toEqual([
+      expect.objectContaining({ kind: 'builtin', id: 'schedule_chat', iconKey: 'schedule_chat' }),
+    ]);
+    expect(
+      buildCatalog({ ...enabled, agentsConfig: { capabilities: [AgentCapabilities.tools] } }).some(
+        (item) => item.id === 'schedule_chat',
+      ),
+    ).toBe(false);
+    expect(
+      buildCatalog({ ...enabled, regularTools: [] }).some((item) => item.id === 'schedule_chat'),
+    ).toBe(false);
+  });
+
   test('offers handoffs without the subagents capability', () => {
     expect(buildCatalog(emptyInputs).map((item) => item.id)).toEqual(['handoffs']);
   });

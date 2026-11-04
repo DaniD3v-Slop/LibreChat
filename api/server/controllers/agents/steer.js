@@ -1,6 +1,7 @@
 const {
   checkAccess,
   handleSteerRequest,
+  readScheduleFireContext,
   handleSteerCancel,
   handleSteerArm,
 } = require('@librechat/api');
@@ -21,6 +22,7 @@ const {
   getServerGenerationProtocol,
 } = require('~/server/controllers/agents/protocol');
 const db = require('~/models');
+const { isScheduleLive } = require('~/server/services/Schedules');
 
 /** Upper bound before the package reads the immutable live-job marker. */
 const getHostGenerationProtocol = (req) =>
@@ -117,6 +119,8 @@ const runSteerController = async (req, res, requireIdempotentDelivery) => {
     const expectedAgentId = requireIdempotentDelivery ? req.body?.agentId : undefined;
     const { status, body } = await handleSteerRequest(req.user ?? {}, req.body ?? {}, {
       generationProtocolVersion,
+      scheduleContext: readScheduleFireContext(req),
+      isScheduleLive,
       signal: abortController.signal,
       ...(requireIdempotentDelivery && { requireIdempotentDelivery: true }),
       getFiles: db.getFiles,

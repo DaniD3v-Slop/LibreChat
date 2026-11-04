@@ -27,6 +27,7 @@ const RUN_TONE: Record<ScheduleRunStatus, { tone: ScheduleRowTone; label: Transl
   started: { tone: 'running', label: 'com_ui_schedule_run_started' },
   skipped_overlap: { tone: 'running', label: 'com_ui_schedule_run_skipped' },
   skipped_balance: { tone: 'warning', label: 'com_ui_schedule_run_skipped' },
+  skipped_inactive: { tone: 'warning', label: 'com_ui_schedule_skipped_inactive' },
 };
 
 /**

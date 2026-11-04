@@ -3,7 +3,7 @@ import { useAtomValue } from 'jotai';
 import { useRecoilValue } from 'recoil';
 import { useForm } from 'react-hook-form';
 import { useParams } from 'react-router-dom';
-import { Constants, buildTree } from 'librechat-data-provider';
+import { Constants, buildTree, PermissionTypes, Permissions } from 'librechat-data-provider';
 import { ChatPane, getChatPaneView, QueuedTurnPortalProvider } from '@librechat/chat/components';
 import {
   submissionByIndex,
@@ -17,12 +17,14 @@ import type { TChatProject, TMessage } from 'librechat-data-provider';
 import type { ChatFormValues } from '~/common';
 import { AddedChatContext, ChatFormProvider, useChatContext, useFileMapContext } from '~/Providers';
 import Footer, { useLandingFooter, useConfiguredFooter } from './Footer';
+import { useGetStartupConfig, useSchedulesQuery } from '~/data-provider';
+import { useAddedResponse, useLocalize, useHasAccess } from '~/hooks';
+import useRunSync from '~/components/SidePanel/Schedules/useRunSync';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import ApprovalProvider from './Messages/Content/ApprovalContext';
 import ConversationStarters from './Input/ConversationStarters';
 import ProjectBadge from '~/components/Projects/ProjectBadge';
 import { OwnerTextProvider } from './Messages/PrivateText';
-import { useAddedResponse, useLocalize } from '~/hooks';
 import MessagesView from './Messages/MessagesView';
 import Presentation from './Presentation';
 import ChatForm from './Input/ChatForm';
@@ -84,6 +86,27 @@ function ChatViewPane({
   }, [messages, fileMap]);
 
   const chat = useChatContext();
+  const { data: startupConfig } = useGetStartupConfig();
+  const schedulesConfig = startupConfig?.interface?.schedules;
+  const canUseSchedules = useHasAccess({
+    permissionType: PermissionTypes.SCHEDULES,
+    permission: Permissions.USE,
+  });
+  const schedulesEnabled =
+    index === 0 &&
+    canUseSchedules &&
+    schedulesConfig != null &&
+    schedulesConfig !== false &&
+    !(typeof schedulesConfig === 'object' && schedulesConfig.use === false);
+  const { data: schedulesData, dataUpdatedAt: schedulesUpdatedAt } = useSchedulesQuery({
+    enabled: schedulesEnabled,
+  });
+  useRunSync(
+    schedulesEnabled ? schedulesData?.schedules : undefined,
+    schedulesUpdatedAt,
+    conversationId,
+    chat.isSubmitting,
+  );
   const addedChatHelpers = useAddedResponse();
 
   const activeConversation =

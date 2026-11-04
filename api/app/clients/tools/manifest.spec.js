@@ -1,14 +1,20 @@
 const { manifestToolMap, isAgentsOnlyTool } = require('./manifest');
 
 describe('isAgentsOnlyTool', () => {
-  it('flags ask_user_question (agentsOnly in the real manifest) in both wire shapes', () => {
+  it.each([
+    'ask_user_question',
+    'schedule_chat',
+    'create_schedule',
+    'list_schedules',
+    'get_schedule',
+    'update_schedule',
+    'delete_schedule',
+  ])('flags %s in both wire shapes', (name) => {
     // Guard the data too: the whole assistants-rejection path keys on this flag.
-    expect(manifestToolMap['ask_user_question']?.agentsOnly).toBe(true);
+    expect(manifestToolMap[name]?.agentsOnly).toBe(true);
 
-    expect(isAgentsOnlyTool('ask_user_question')).toBe(true);
-    expect(isAgentsOnlyTool({ type: 'function', function: { name: 'ask_user_question' } })).toBe(
-      true,
-    );
+    expect(isAgentsOnlyTool(name)).toBe(true);
+    expect(isAgentsOnlyTool({ type: 'function', function: { name } })).toBe(true);
   });
 
   it('does not flag ordinary manifest tools, unknown tools, or malformed inputs', () => {

@@ -3157,6 +3157,7 @@ class GenerationJobManagerClass {
         scheduleConfigRevision: jobData.scheduleConfigRevision,
         scheduleManual: jobData.scheduleManual,
         scheduleMCPCompletion: jobData.scheduleMCPCompletion,
+        scheduleSteered: jobData.scheduleSteered,
         scheduleOutcome: jobData.scheduleOutcome,
         scheduleOutcomeError: jobData.scheduleOutcomeError,
         scheduleMCPFailure: jobData.scheduleMCPFailure,

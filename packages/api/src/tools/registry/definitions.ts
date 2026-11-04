@@ -3,21 +3,13 @@ import {
   CalculatorToolDefinition,
   GitHubCompareToolDefinition,
 } from '@librechat/agents';
-import type { ExtendedJsonSchema } from './schema';
+import type { ExtendedJsonSchema, ToolRegistryDefinition } from './schema';
 import { AskUserQuestionToolDefinition } from '~/agents/hitl/askUserQuestionTool';
+import { ScheduleToolDefinitions } from '~/agents/schedule';
 import { geminiToolkit } from '~/tools/toolkits/gemini';
 import { oaiToolkit } from '~/tools/toolkits/oai';
 
-export type { ExtendedJsonSchema } from './schema';
-
-export interface ToolRegistryDefinition {
-  name: string;
-  description: string;
-  schema: ExtendedJsonSchema;
-  description_for_model?: string;
-  responseFormat?: 'content_and_artifact' | 'content';
-  toolType: 'builtin' | 'mcp' | 'action' | 'custom';
-}
+export type { ExtendedJsonSchema, ToolRegistryDefinition } from './schema';
 
 /** Google Search tool JSON schema */
 export const googleSearchSchema: ExtendedJsonSchema = {
@@ -421,6 +413,7 @@ const agentToolDefinitions: Record<string, ToolRegistryDefinition> = {
     schema: WebSearchToolDefinition.schema as unknown as ExtendedJsonSchema,
     toolType: 'builtin',
   },
+  ...ScheduleToolDefinitions,
   [AskUserQuestionToolDefinition.name]: {
     name: AskUserQuestionToolDefinition.name,
     description: AskUserQuestionToolDefinition.description,

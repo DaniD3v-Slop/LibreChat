@@ -131,6 +131,7 @@ import { assertModelBoundContent } from '../middleware/modelBoundContent';
 import { resolveAttachedWorkspaceReadFileLines } from '~/code/workspace';
 import { isValidInstructionsPromptLink } from './instructions/linked';
 import { PARTIAL_RESOLVED_CONVERSATION } from './conversationSymbols';
+import { expandScheduleToolNames, isScheduleWriteTool } from './schedule';
 import { registerMemoryTools, memoryToolUsageGuard } from './memory';
 import { isImplicitStatefulCodeRouteAvailable } from '~/code/config';
 import { applyIntentLabels, sanitizeIntentLabels } from './intent';
@@ -144,9 +145,11 @@ import { isFatalAgentInitializationError } from './errors';
 import { assertToolOptionsWithinLimits } from './options';
 import { hasActiveFilePolicy } from '../protection/files';
 import { resolveAgentCodeExecution } from '~/code/agent';
+import { isScheduleFireRequest } from '~/schedules/trigger';
 import { hasActiveFileFieldPolicy } from '~/protection';
 import { applyBackgroundToolCalls } from './background';
 import { admitCurrentFileBudget } from './files/budget';
+import { isValidTimezone } from '~/schedules/cadence';
 import { applyTurnDelivery } from './files/delivery';
 import { generateArtifactsPrompt } from '~/prompts';
 import { getAgentInferencePolicy } from './input';
@@ -2194,7 +2197,9 @@ export async function initializeAgent(
     loadTools?.({
       provider,
       agentId: agent.id,
-      tools,
+      tools: isScheduleFireRequest(params.req)
+        ? expandScheduleToolNames(tools).filter((name) => !isScheduleWriteTool(name))
+        : tools,
       model: agent.model,
       tool_options: agent.tool_options,
       tool_resources: runtimeToolResources,
@@ -2597,6 +2602,32 @@ export async function initializeAgent(
         `[initializeAgent] Agent ${agent.id} links instructions to group ${instructionsPromptLink.groupId} but no resolver was provided; continuing with empty instructions`,
       );
     }
+  }
+
+  const hasSchedulingTimeTools = ['create_schedule', 'update_schedule'].some(
+    (name) =>
+      toolRegistry?.has(name) === true ||
+      toolDefinitions?.some((definition) => definition.name === name) === true ||
+      structuredTools?.some((tool) => tool.name === name) === true,
+  );
+  const schedulingTimezone = runtime.requestBody.timezone;
+  if (
+    hasSchedulingTimeTools &&
+    !isScheduleFireRequest(params.req) &&
+    typeof schedulingTimezone === 'string' &&
+    !/^[+-]/.test(schedulingTimezone) &&
+    isValidTimezone(schedulingTimezone)
+  ) {
+    appendAdditionalInstructions(
+      agent,
+      replaceSpecialVars({
+        text:
+          'Current local date and time: {{current_datetime}}. Resolve relative scheduling dates such as tomorrow from this date. ' +
+          "Schedule times use the user's timezone automatically. Do not ask for their timezone.",
+        now: runtime.turnStartedAt,
+        timezone: schedulingTimezone,
+      }),
+    );
   }
 
   if (agent.instructions && agent.instructions !== '') {

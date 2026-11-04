@@ -103,6 +103,7 @@ describe('SteerController (wrapper)', () => {
         generationProtocolVersion: 1,
         signal: expect.any(AbortSignal),
         getFiles: expect.any(Function),
+        isScheduleLive: expect.any(Function),
         updateFilesUsage: expect.any(Function),
         checkAgentAccess: expect.any(Function),
       },

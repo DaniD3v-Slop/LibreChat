@@ -87,6 +87,11 @@ import {
   stripBackgroundFromToolDefinitions,
 } from '~/agents/background';
 import {
+  resolveToolApprovalPolicy,
+  exemptAskUserQuestionFromApproval,
+  exemptScheduleReadsFromApproval,
+} from '~/agents/hitl/policy';
+import {
   createSubagentWakeupHandleHook,
   agentUsesSubagentCompletionWakeups,
   usesSubagentCompletionWakeups,
@@ -111,7 +116,6 @@ import {
   eventOnlyRunFileTools,
   isRunFileSharingSupported,
 } from './files/runtime';
-import { resolveToolApprovalPolicy, exemptAskUserQuestionFromApproval } from '~/agents/hitl/policy';
 import { applyCustomHandoffPromptKeyCompatibility } from '~/agents/handoffPromptKeyCompatibility';
 import { stripIntentFromToolRegistry, stripIntentFromToolDefinitions } from '~/agents/intent';
 import { createAgentToolApprovalSession, bindRunToolApprovalSession } from './hitl/modes';
@@ -123,12 +127,14 @@ import { reportSubagentResolutionFailure } from '~/agents/failures/subagent';
 import { createScheduledMCPRunPolicy } from '~/schedules/authorization/run';
 import { CREATE_FILE_TOOL_NAME, EDIT_FILE_TOOL_NAME } from '~/agents/tools';
 import { buildAgentInitialToolSessions } from '~/agents/codeFilesSession';
+import { agentGraphRequestsScheduleChat } from '~/agents/hitl/admission';
 import { getDirectDispatcher, getProxyDispatcher } from '~/utils/proxy';
 import { getAzureCredentials, constructAzureURL } from '~/utils/azure';
 import { buildEffectiveToolApprovalPolicy } from '~/agents/hitl/allow';
 import { prepareQueuedCodeFileContext } from '~/files/code/queued';
 import { getBuiltInBaseURL } from '~/endpoints/openai/initialize';
 import { getProviderConfig } from '~/endpoints/config/providers';
+import { SCHEDULE_WRITE_TOOL_NAMES } from '~/agents/schedule';
 import { buildToolApprovalHooks } from '~/agents/hitl/hooks';
 import { getAgentCheckpointer } from '~/agents/checkpointer';
 import { getPluginHookSource } from '~/agents/hooks/source';
@@ -2161,6 +2167,7 @@ export async function createRun({
   scheduledMCPExecution,
   recordScheduledMCPDenial,
   toolApprovalAllows,
+  scheduleChatApprovalHook,
   toolInputValidationErrors,
   sessionStartSource,
   streaming = true,
@@ -2313,6 +2320,8 @@ export async function createRun({
   reviewedToolApprovals?: ReviewedToolApprovals;
   scheduledMCPExecution?: ScheduleMCPExecution;
   recordScheduledMCPDenial?: (error: ScheduledMCPPolicyError) => Promise<boolean>;
+  /** Fresh server-owned generation check before schedule creation may request approval. */
+  scheduleChatApprovalHook?: HookCallback<'PreToolUse'>;
   /** Plugin-hook SessionStart lifecycle source: 'startup' (default) or 'resume' on HITL-rebuild paths. */
   sessionStartSource?: string;
   /** Request-scoped tool input failures consumed by the completion handler. */
@@ -2788,6 +2797,7 @@ export async function createRun({
   const toolApprovalPolicy = resolveToolApprovalPolicy({
     endpoint: agentsEndpointConfig?.toolApproval,
     attachedCodeEnvironment: attachedCodeEnvironmentAgentIds.size > 0,
+    scheduleChat: agentGraphRequestsScheduleChat(agents),
   });
   // Every caller needs the policy hooks, including API-key ingresses. Only
   // AgentClient supports pause/resume; the SDK blocks `ask` without HITL enabled.
@@ -2801,7 +2811,9 @@ export async function createRun({
   );
   const effectiveToolApprovalPolicy = () =>
     exemptAskUserQuestionFromApproval(
-      buildEffectiveToolApprovalPolicy(toolApprovalPolicy, mcpToolAliases, toolApprovalAllows),
+      exemptScheduleReadsFromApproval(
+        buildEffectiveToolApprovalPolicy(toolApprovalPolicy, mcpToolAliases, toolApprovalAllows),
+      ),
       ASK_USER_QUESTION_TOOL_NAME,
     );
   const nativeEditFileAgentIds = collectNativeEditFileAgentIds(agents);
@@ -2846,6 +2858,15 @@ export async function createRun({
           tenantId: tenantId ?? user?.tenantId,
           appConfig,
         })),
+      ...(scheduleChatApprovalHook == null
+        ? []
+        : [
+            {
+              hook: scheduleChatApprovalHook,
+              matcher:
+                '^(create_schedule|list_schedules|get_schedule|update_schedule|delete_schedule)$',
+            },
+          ]),
       ...(attachedCodeEnvironmentAgentIds.size > 0
         ? [
             {
@@ -3086,6 +3107,7 @@ export async function createRun({
         Constants.EXECUTE_CODE,
         Constants.BASH_TOOL,
         ASK_USER_QUESTION_TOOL_NAME,
+        ...SCHEDULE_WRITE_TOOL_NAMES,
         /**
          * Background-capable tools: eager execution could launch the detached
          * task with speculative/partial args before the final tool call, and a

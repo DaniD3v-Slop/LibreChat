@@ -4,9 +4,8 @@ Scheduled chats remain experimental and default-off.
 
 ## Must-have product follow-ups
 
-- Add one-time and monthly schedules; current cadences are hourly, daily, weekdays, and weekly.
-- Add non-agent chat targets and existing-conversation continuation; current schedules require
-  `agent_id` and always target `new`.
+- Add monthly structured pickers; cron can already express monthly recurrence.
+- Add non-agent chat targets; schedules still require a saved agent.
 
 ## Client/API parity
 
@@ -14,8 +13,8 @@ Scheduled chats remain experimental and default-off.
 - Add active-run and run-history discovery. The list response currently projects only `lastRun`,
   which is written on pause, skip, or terminal outcomes, so the client's `started` chip is
   unreachable.
-- Add multi-day weekly, timezone, and attachment controls. The API supports these, but the dialog
-  does not. NOTE: the dialog cannot scroll from `md` up (`md:overflow-visible` exists because the
+- Keep multi-day weekly, timezone, attachment and delivery-mode controls usable at small viewport
+  sizes. NOTE: the dialog cannot scroll from `md` up (`md:overflow-visible` exists because the
   Ariakit popovers cannot portal out of the focus-trapping Radix dialog), so its content must fit
   the viewport — roughly 30px of slack remain at 1280x720. Each of these controls adds a row and
   will push the footer's Save button out of reach. Adding them needs the height problem solved

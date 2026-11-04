@@ -1,10 +1,11 @@
 import React from 'react';
-import { QueryKeys } from 'librechat-data-provider';
 import { act, renderHook } from '@testing-library/react';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import type { TSchedule, TConversation } from 'librechat-data-provider';
+import { QueryKeys, Constants, tMessageSchema } from 'librechat-data-provider';
+import { QueryClient, QueryObserver, QueryClientProvider } from '@tanstack/react-query';
+import type { TSchedule, TConversation, TMessage } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
 import { resetTrackedRuns, trackedRunCount } from '~/data-provider/Schedules/admission';
+import { selectActiveBranchTail } from '~/utils/messages';
 import useRunSync from '../useRunSync';
 
 const mockGetConversationById = jest.fn<Promise<TConversation>, [string]>();
@@ -107,6 +108,90 @@ const admit = async () => {
 };
 
 describe('useRunSync', () => {
+  it('refreshes a settled continuation with no schedules panel and reveals the next branch tail', async () => {
+    const queryClient = createQueryClient();
+    const key = [QueryKeys.messages, 'open-chat'];
+    const message = (messageId: string, parentMessageId: string, user: boolean) =>
+      tMessageSchema.omit({ feedback: true }).parse({
+        messageId,
+        parentMessageId,
+        conversationId: 'open-chat',
+        isCreatedByUser: user,
+        text: messageId,
+      });
+    const old = [
+      message('u1', Constants.NO_PARENT, true),
+      message('older-branch', 'u1', false),
+      message('a1', 'u1', false),
+    ];
+    const refreshed = [
+      ...old,
+      message('reminder-user', 'a1', true),
+      message('reminder-answer', 'reminder-user', false),
+    ];
+    queryClient.setQueryData(key, old);
+    const fetchHistory = jest.fn(async () => refreshed);
+    const observer = new QueryObserver<TMessage[]>(queryClient, {
+      queryKey: key,
+      queryFn: fetchHistory,
+      staleTime: Infinity,
+    });
+    const unsubscribe = observer.subscribe(() => undefined);
+    const { rerender } = renderHook(
+      ({ schedules, busy }) => useRunSync(schedules, 1, 'open-chat', busy),
+      { wrapper: createWrapper(queryClient), initialProps: { schedules: [schedule], busy: false } },
+    );
+    expect(fetchHistory).not.toHaveBeenCalled();
+    await act(async () =>
+      rerender({
+        schedules: [settled('open-chat', { target: 'continue', conversationId: 'open-chat' })],
+        busy: false,
+      }),
+    );
+    expect(fetchHistory).toHaveBeenCalledTimes(1);
+    expect(
+      selectActiveBranchTail(queryClient.getQueryData<TMessage[]>(key), 'open-chat')?.messageId,
+    ).toBe('reminder-answer');
+    expect(
+      selectActiveBranchTail(queryClient.getQueryData<TMessage[]>(key), 'open-chat', () => 0)
+        ?.parentMessageId,
+    ).toBe('reminder-user');
+    expect(
+      selectActiveBranchTail(queryClient.getQueryData<TMessage[]>(key), 'open-chat', (parent) =>
+        parent === 'u1' ? 1 : 0,
+      )?.messageId,
+    ).toBe('older-branch');
+    unsubscribe();
+    queryClient.clear();
+  });
+
+  it('refreshes initial and repeated same-chat settlements, deferring while a local generation is live', () => {
+    const queryClient = createQueryClient();
+    const key = [QueryKeys.messages, 'open-chat'];
+    queryClient.setQueryData(key, []);
+    const first = settled('open-chat', { target: 'continue', conversationId: 'open-chat' });
+    const { rerender } = renderHook(
+      ({ schedules, busy }) => useRunSync(schedules, 1, 'open-chat', busy),
+      { wrapper: createWrapper(queryClient), initialProps: { schedules: [first], busy: true } },
+    );
+    expect(queryClient.getQueryState(key)?.isInvalidated).toBe(false);
+    rerender({ schedules: [first], busy: false });
+    expect(queryClient.getQueryState(key)?.isInvalidated).toBe(true);
+    queryClient.setQueryData(key, []);
+    queryClient.setQueryData(listKey, queryClient.getQueryData(listKey));
+    rerender({ schedules: [first], busy: false });
+    expect(queryClient.getQueryState(key)?.isInvalidated).toBe(false);
+    rerender({
+      schedules: [
+        { ...first, lastRun: { ...first.lastRun!, firedAt: '2026-09-06T09:00:00.000Z' } },
+      ],
+      busy: false,
+    });
+    expect(queryClient.getQueryState(key)?.isInvalidated).toBe(true);
+    expect(queryClient.getQueryState(listKey)?.isInvalidated).toBe(true);
+    queryClient.clear();
+  });
+
   beforeEach(() => {
     jest.resetAllMocks();
     jest.useFakeTimers();

@@ -273,6 +273,8 @@ export interface SerializableJobData {
   scheduleManual?: boolean;
   /** Original schedule root for a legacy completion, never occurrence bookkeeping. */
   scheduleMCPCompletion?: ScheduledMCPIdentity;
+  /** A trusted schedule injected instructions into this generation. */
+  scheduleSteered?: boolean;
   /** Terminal outcome evidence retained when the schedule row could not be updated. */
   scheduleOutcome?: 'success' | 'error' | 'interrupted' | 'skipped_balance';
   scheduleOutcomeError?: string;
@@ -517,6 +519,7 @@ export type JobMetadataPatch = Partial<
     | 'scheduleConfigRevision'
     | 'scheduleManual'
     | 'scheduleMCPCompletion'
+    | 'scheduleSteered'
     | 'scheduleOutcome'
     | 'scheduleOutcomeError'
     | 'scheduleMCPFailure'

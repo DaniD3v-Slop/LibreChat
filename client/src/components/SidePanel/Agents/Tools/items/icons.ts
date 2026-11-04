@@ -1,5 +1,6 @@
 import {
   Code,
+  CalendarClock,
   MessageCircleQuestion,
   Globe,
   Brain,
@@ -55,6 +56,10 @@ const BUILTIN_ICONS: Record<string, ItemIcon> = {
   memory: {
     Icon: Brain,
     colorClass: 'bg-series-8/15 text-series-8',
+  },
+  schedule_chat: {
+    Icon: CalendarClock,
+    colorClass: 'bg-surface-secondary text-text-primary',
   },
   ask_user_question: {
     Icon: MessageCircleQuestion,

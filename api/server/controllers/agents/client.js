@@ -62,6 +62,7 @@ const {
   isHITLEnabled,
   resolveToolApprovalPolicy,
   buildToolApprovalHooks,
+  createScheduleChatApprovalHook,
   buildToolApprovalExecutionConfig,
   collectAttachedCodeEnvironmentAgentIds,
   collectAttachedCodeEnvironmentPolicySettings,
@@ -5072,6 +5073,11 @@ class AgentClient extends BaseClient {
             this.options.req?.resolvedConversation,
             this.conversationId,
           ),
+          scheduleChatApprovalHook: createScheduleChatApprovalHook(
+            this.options.req,
+            (conversationId) => GenerationJobManager.getJob(conversationId),
+            db.getRoleByName,
+          ),
           toolInputValidationErrors: this.toolInputValidationErrors,
           // Mid-run steering: drain queued user messages at each tool-batch
           // boundary and inject them into graph state. The offset wrapper
@@ -5885,6 +5891,11 @@ class AgentClient extends BaseClient {
           agentsEConfig?.toolApproval,
           this.options.req?.resolvedConversation,
           this.conversationId,
+        ),
+        scheduleChatApprovalHook: createScheduleChatApprovalHook(
+          this.options.req,
+          (conversationId) => GenerationJobManager.getJob(conversationId),
+          db.getRoleByName,
         ),
         // Plugin SessionStart hooks match on the lifecycle source; a rebuilt run is a
         // resume, not a fresh startup.

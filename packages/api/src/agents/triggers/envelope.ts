@@ -35,7 +35,7 @@ interface AgentTriggerTarget {
 }
 
 /**
- * Trusted host controls for a new fire. These values shape LibreChat's own
+ * Trusted host controls for a trigger delivery. These values shape LibreChat's own
  * generation request; they are never sourced directly from model output.
  * `metadata` is opaque to the trigger core and lets an authenticated adapter
  * identify its delivery to host-side lifecycle hooks without widening the
@@ -89,12 +89,12 @@ interface AgentTriggerEnvelopeBase {
   /** Host-rendered agent input; source payload remains available in `event.payload`. */
   input: string;
   expectedAction?: AgentTriggerExpectedAction;
+  run?: AgentFireRunContext;
 }
 
 export interface AgentFireTriggerEnvelope extends AgentTriggerEnvelopeBase {
   mode: 'fire';
   target: AgentFireTarget;
-  run?: AgentFireRunContext;
 }
 
 export interface AgentContinueTriggerEnvelope extends AgentTriggerEnvelopeBase {
@@ -120,13 +120,13 @@ interface CreateAgentTriggerEnvelopeBase {
   event: AgentTriggerEvent;
   input: string;
   expectedAction?: AgentTriggerExpectedAction;
+  run?: AgentFireRunContext;
 }
 
 export type CreateAgentTriggerEnvelopeInput =
   | (CreateAgentTriggerEnvelopeBase & {
       mode: 'fire';
       target: AgentFireTarget;
-      run?: AgentFireRunContext;
     })
   | (CreateAgentTriggerEnvelopeBase & {
       mode: 'continue';
@@ -224,9 +224,7 @@ function createExpectedAction(
   };
 }
 
-function createFireRunContext(
-  input: AgentFireRunContext | null | undefined,
-): AgentFireRunContext | undefined {
+function createFireRunContext(input: unknown): AgentFireRunContext | undefined {
   if (input == null) {
     return undefined;
   }
@@ -267,15 +265,14 @@ export function createAgentTriggerEnvelope(
     event: createEvent(input.event),
     input: requireString(input.input, 'input'),
     ...(expectedAction != null && { expectedAction }),
+    ...(input.run != null && { run: createFireRunContext(input.run) }),
   };
 
   if (input.mode === 'fire') {
-    const run = createFireRunContext(input.run);
     return {
       ...base,
       mode: input.mode,
       target: { agentId: requireString(input.target?.agentId, 'target.agentId') },
-      ...(run != null && { run }),
     };
   }
 
@@ -377,18 +374,15 @@ export function parseAgentTriggerEnvelope(input: unknown): AgentTriggerEnvelope 
     event,
     input: requireString(envelope.input, 'input'),
     ...(expectedAction != null && { expectedAction }),
+    ...(envelope.run != null && { run: createFireRunContext(envelope.run) }),
   };
   const target = requireRecord(envelope.target, 'target');
 
   if (mode === 'fire') {
-    const run = createFireRunContext(
-      envelope.run == null ? undefined : (envelope.run as AgentFireRunContext),
-    );
     return {
       ...base,
       mode,
       target: { agentId: requireString(target.agentId, 'target.agentId') },
-      ...(run != null && { run }),
     };
   }
 

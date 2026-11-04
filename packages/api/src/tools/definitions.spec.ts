@@ -34,6 +34,31 @@ describe('definitions.ts', () => {
   });
 
   describe('loadToolDefinitions', () => {
+    it('expands the saved scheduling marker into the five native definitions', async () => {
+      const result = await loadToolDefinitions(
+        { userId: 'user-1', agentId: 'agent-1', tools: ['schedule_chat'] },
+        {
+          getOrFetchMCPServerTools: async () => null,
+          isBuiltInTool: (name) =>
+            [
+              'create_schedule',
+              'list_schedules',
+              'get_schedule',
+              'update_schedule',
+              'delete_schedule',
+            ].includes(name),
+        },
+      );
+      expect(result.toolDefinitions.map((definition) => definition.name)).toEqual([
+        'create_schedule',
+        'list_schedules',
+        'get_schedule',
+        'update_schedule',
+        'delete_schedule',
+      ]);
+      expect(result.toolRegistry.has('schedule_chat')).toBe(false);
+    });
+
     it.each([undefined, false, true])(
       'gates selected comparison definitions on explicit opt-in (%p)',
       async (githubCompareEnabled) => {

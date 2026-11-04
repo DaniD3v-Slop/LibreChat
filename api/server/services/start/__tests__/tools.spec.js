@@ -34,6 +34,12 @@ describe('loadAndFormatTools', () => {
     fs.rmSync(directory, { recursive: true, force: true });
   });
 
+  it('discovers the optional schedule group without a request context', () => {
+    const tools = loadAndFormatTools({ directory, adminIncluded: ['schedule_chat'] });
+    expect(tools.schedule_chat.function.name).toBe('schedule_chat');
+    expect(tools.schedule_chat.function.parameters).toEqual({ type: 'object', properties: {} });
+  });
+
   it.each([
     { adminIncluded: [] },
     { adminIncluded: ['Example.js', 'Example.spec.js', 'Example.test.js'] },

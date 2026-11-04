@@ -8,6 +8,7 @@ import {
 } from 'librechat-data-provider';
 import type { TToolApprovalPolicy } from 'librechat-data-provider';
 import type { AgentToolOptions } from 'librechat-data-provider';
+import type { SerializableJobData } from '~/stream/interfaces/IJobStore';
 import type { PluginHookSource } from '~/agents/hooks/source';
 import type { MCPToolAlias } from '~/tools/classification';
 import type { SkillPrimeWithTools } from '~/agents/skills';
@@ -18,6 +19,8 @@ import {
   isToolDeniedByApprovalPolicy,
   isToolBlockedByApprovalPolicy,
   healToolApprovalPolicy,
+  resolveToolApprovalPolicy,
+  exemptScheduleReadsFromApproval,
 } from './policy';
 import {
   assertToolOptionsWithinLimits,
@@ -26,10 +29,12 @@ import {
 } from '../options';
 import { selectSkillPrimesForTurn, unionPrimeAllowedTools } from '~/agents/skills';
 import { isMCPAllPlaceholder, normalizeAgentToolKeys } from '~/mcp/utils';
+import { SCHEDULE_CHAT_TOOL_NAME, SCHEDULE_WRITE_TOOL_NAMES } from '~/agents/schedule';
 import { ASK_USER_QUESTION_TOOL_NAME } from './askUserQuestionTool';
 import { aliasMCPToolOptions } from '~/tools/classification';
 import { resolvedToolApprovalHooksCanMatch } from './hooks';
 import { buildEffectiveToolApprovalPolicy } from './allow';
+import { collectReachableAgents } from '../traversal';
 
 interface ApprovalToolReference {
   readonly name?: string;
@@ -361,6 +366,21 @@ function collectApprovalAgents(roots: readonly (ToolApprovalAdmissionAgent | nul
   return { agents, lazyAgentIds, lazyAgents };
 }
 
+function agentsRequestScheduleChat(agents: readonly ToolApprovalAdmissionAgent[]): boolean {
+  return agents.some(
+    (agent) =>
+      agentHasTool(agent, SCHEDULE_CHAT_TOOL_NAME) ||
+      SCHEDULE_WRITE_TOOL_NAMES.some((name) => agentHasTool(agent, name)),
+  );
+}
+
+/** Whether an eager or declared lazy agent can write schedules. */
+export function agentGraphRequestsScheduleChat(
+  roots: readonly (ToolApprovalAdmissionAgent | null | undefined)[],
+): boolean {
+  return agentsRequestScheduleChat(collectReachableAgents(roots));
+}
+
 /**
  * Whether an initialized run can pause through tool approval or a top-level
  * `ask_user_question`. Eager tools are matched exactly across every subagent
@@ -368,7 +388,7 @@ function collectApprovalAgents(roots: readonly (ToolApprovalAdmissionAgent | nul
  * boundary remains the final fail-closed durability check.
  */
 export function canAgentGraphPause({
-  policy,
+  policy: configuredPolicy,
   agents,
   hostGeneratedToolNames = [],
   resolvedProgrammaticHooks = [],
@@ -376,6 +396,11 @@ export function canAgentGraphPause({
   askUserQuestionAdminDisabled = false,
   toolApprovalAllows,
 }: ToolApprovalAdmissionInput): boolean {
+  const approvalGraph = collectApprovalAgents(agents);
+  const policy = resolveToolApprovalPolicy({
+    endpoint: configuredPolicy,
+    scheduleChat: agentsRequestScheduleChat(approvalGraph.agents),
+  });
   const asksUserQuestion =
     !askUserQuestionAdminDisabled &&
     !isToolDeniedByApprovalPolicy(policy, ASK_USER_QUESTION_TOOL_NAME) &&
@@ -385,13 +410,18 @@ export function canAgentGraphPause({
   }
 
   const consume = createAdmissionWork();
-  const approvalGraph = collectApprovalAgents(agents);
   const toolOwners = new Map<string, Set<string | undefined>>();
   const reviewGatedTools = new Set<string>();
   let unresolvedModeCanAsk = false;
   const aliases: MCPToolAlias[] = [];
   const aliasesByToolName = new Map<string, string[]>();
   const addToolName = (name: unknown, agentId?: string) => {
+    if (name === SCHEDULE_CHAT_TOOL_NAME) {
+      for (const writeName of SCHEDULE_WRITE_TOOL_NAMES) {
+        addToolName(writeName, agentId);
+      }
+      return;
+    }
     if (typeof name === 'string' && name !== ASK_USER_QUESTION_TOOL_NAME) {
       const owners = toolOwners.get(name) ?? new Set<string | undefined>();
       owners.add(agentId);
@@ -453,7 +483,9 @@ export function canAgentGraphPause({
     }
   }
 
-  const effectivePolicy = buildEffectiveToolApprovalPolicy(policy, aliases, toolApprovalAllows);
+  const effectivePolicy = exemptScheduleReadsFromApproval(
+    buildEffectiveToolApprovalPolicy(policy, aliases, toolApprovalAllows),
+  );
   const knownToolCanPause = Array.from(toolOwners).some(([toolName, agentIds]) => {
     if (isToolBlockedByApprovalPolicy(effectivePolicy, toolName)) return false;
     if (reviewGatedTools.has(toolName)) return true;
@@ -598,8 +630,32 @@ export function agentRunUsesCheckpointer({
   'policy' | 'agents' | 'askUserQuestionAdminDisabled'
 >): boolean {
   return (
-    isHITLEnabled(policy) ||
+    isHITLEnabled(
+      resolveToolApprovalPolicy({
+        endpoint: policy,
+        scheduleChat: agentGraphRequestsScheduleChat(agents),
+      }),
+    ) ||
     (!askUserQuestionAdminDisabled &&
       agents.some((agent) => agent != null && agentHasTool(agent, ASK_USER_QUESTION_TOOL_NAME)))
+  );
+}
+
+/** Terminal owners prune exact generation scopes even when no approval is currently pending. */
+export function shouldPruneAgentCheckpoint(
+  metadata:
+    | Pick<
+        SerializableJobData,
+        'checkpointNamespace' | 'pendingAction' | 'resolvedAskUserQuestions'
+      >
+    | undefined,
+  policy?: TToolApprovalPolicy,
+): boolean {
+  return (
+    (typeof metadata?.checkpointNamespace === 'string' &&
+      metadata.checkpointNamespace.length > 0) ||
+    isHITLEnabled(policy) ||
+    metadata?.pendingAction != null ||
+    (metadata?.resolvedAskUserQuestions?.length ?? 0) > 0
   );
 }

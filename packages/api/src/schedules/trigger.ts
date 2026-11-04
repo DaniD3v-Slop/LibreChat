@@ -10,6 +10,8 @@ interface TriggerRecord {
 }
 
 export interface ScheduleFireContext {
+  /** Agent selected by the authenticated trigger host. */
+  agentId?: string;
   scheduleId: string;
   scheduledFor: string;
   manual: boolean;
@@ -37,6 +39,7 @@ export function readScheduleFireContext(
   const event = record(trigger?.event);
   const source = record(event?.source);
   const metadata = record(trigger?.metadata);
+  const target = record(trigger?.target);
   if (
     trigger?.version !== 1 ||
     event?.type !== 'schedule.occurrence' ||
@@ -61,6 +64,10 @@ export function readScheduleFireContext(
     return undefined;
   }
   return {
+    ...(typeof target?.agentId === 'string' &&
+      target.agentId.trim().length > 0 && {
+        agentId: target.agentId,
+      }),
     scheduleId: source.id,
     scheduledFor: new Date(event.occurredAt).toISOString(),
     manual: metadata?.manual === true,
@@ -110,4 +117,40 @@ export function exemptFromUserLimiter(req?: ScheduleTriggerRequest): boolean {
 /** Acquire/release sites share this exact predicate to keep counters balanced. */
 export function exemptFromConcurrencyLimiter(req?: ScheduleTriggerRequest): boolean {
   return exemptFromUserLimiter(req);
+}
+
+export interface ScheduleGenerationSnapshot {
+  createdAt: number;
+  metadata?: {
+    userId?: string;
+    tenantId?: string;
+    scheduleId?: string;
+    scheduleSteered?: boolean;
+  };
+}
+
+/** Re-read the generation because a scheduled steer can arrive after the request starts. */
+export async function hasScheduledGenerationContext(
+  req: ScheduleTriggerRequest & {
+    user?: { id?: string; tenantId?: string };
+    turnStartedAt?: number;
+  },
+  getJob: (conversationId: string) => Promise<ScheduleGenerationSnapshot | null | undefined>,
+): Promise<boolean> {
+  if (isScheduleFireRequest(req)) {
+    return true;
+  }
+  const conversationId = req.body?.conversationId;
+  if (typeof conversationId !== 'string' || !req.user?.id || req.turnStartedAt == null) {
+    throw new Error('Schedule tool generation identity is unavailable');
+  }
+  const job = await getJob(conversationId);
+  if (
+    job?.createdAt !== req.turnStartedAt ||
+    job.metadata?.userId !== req.user.id ||
+    (job.metadata?.tenantId ?? undefined) !== (req.user.tenantId ?? undefined)
+  ) {
+    throw new Error('Schedule tool generation identity does not match the requesting user');
+  }
+  return job.metadata.scheduleSteered === true || job.metadata.scheduleId != null;
 }

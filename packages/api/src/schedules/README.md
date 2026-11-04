@@ -1,3 +1,82 @@
+# Agent scheduling tools
+
+The optional `schedule_chat` capability and saved agent setting enable five native tools:
+`create_schedule`, `list_schedules`, `get_schedule`, `update_schedule`, and `delete_schedule`.
+The group is off by default and uses the existing native approval flow and Schedules list.
+
+## Scope and input
+
+Every operation is scoped to the authenticated user, executing saved agent and current chat
+project. Outside a project, only schedules originating from this chat are in scope. Callers
+cannot provide user, agent, project or conversation IDs. Only the schedule ID to manage is
+model-supplied; knowing another ID cannot expand access.
+
+`create_schedule` accepts `name`, optional `description`, `prompt: { text, file_ids? }`,
+`cadence` and `mode`. New conversations inherit the current project; conflicting operator
+project policy rejects creation instead of silently placing it outside the tool's scope.
+`continue` and `steer` bind to this chat. The server records its originating conversation.
+`prompt.text` is an instruction for this agent to execute later, not the notification body.
+For example: “Tell the user it is time to go for their run.”
+
+`create_schedule` returns only `{ "id": "sched_…" }`.
+`list_schedules` takes no arguments and returns `{ schedules: [...] }`. Get and update return
+the model-facing record: editable fields, run status and timestamps, excluding ownership IDs,
+revision numbers and scheduler bookkeeping. The default timezone is omitted from results; a
+saved timezone that differs from the browser default appears inside `cadence`.
+`get_schedule` and `delete_schedule` take `id`. `update_schedule` takes `id` and the
+fields to change directly, for example `{ "id": "sched_…", "name": "Go running" }`.
+The server remembers the last accessed revision in the current chat; updates require a prior
+create, get or list there, and refuse concurrent edits until the record is read again.
+Omitted fields remain unchanged;
+prompt and cadence are replaced as whole objects when supplied. `enabled` pauses/resumes.
+Explicitly supplied modes bind to this chat; omitted modes preserve the saved destination.
+
+Tool cadence times use the user’s browser timezone automatically. An optional `cadence.timezone`
+IANA override supports scheduling in another timezone.
+One-shot `at` values use local `YYYY-MM-DDTHH:mm` wall-clock time. Recurring times use the same
+browser timezone. The tool receives the current local date/time for relative requests such as
+“today at 19:25”. Existing schedules retain their saved timezone unless their cadence is replaced. Registered attachment IDs can
+refer to uploads or published generated files owned by the user. Local paths must first pass
+through the normal file publication flow.
+
+## Approval and execution
+
+Reads need SCHEDULES USE. Writes need USE and CREATE, matching the existing UI permission
+contract. Writes ask for native approval by default; explicit `toolApproval.allow` rules can
+permit them without a prompt, while explicit ask/deny rules keep their normal precedence.
+For example, this permits creation while leaving other schedule writes asking by default:
+
+```yaml
+endpoints:
+  agents:
+    toolApproval:
+      enabled: true
+      allow: ['create_schedule']
+```
+
+The permission and scheduled-run recursion checks apply even when a tool is explicitly allowed.
+Scheduled generations may read their scope but cannot create, update or delete schedules.
+
+The shared UI handlers own validation, limits and persistence. Creation retry identity binds
+the user, tenant, conversation, generation, saved agent and original tool call. Reusing it
+cannot create duplicates. Scope checks still apply to a committed replay after context changes.
+The revision cache shares the configured checkpoint/approval retention window. An update attempt
+keeps its original observed revision across retries, including approval resumes. Revision conflicts
+on update require a fresh read and a new tool call. Deletion reports actual draining/cancellation
+state rather than claiming a live generation stopped before persistence acknowledges it.
+
+`fire` starts a new chat; `continue` waits for the original chat's running or paused generation
+before appending a turn; `steer` queues instructions for its active generation or records an
+inactive skip. Continuation uses the latest-created assistant response, matching existing
+trigger semantics rather than a browser-selected historical branch. Steering completion means
+durable queue acceptance, not proof that a model acted on the instruction.
+
+One-shots have no cadence jitter and disable after dispatch. Their occurrence evidence survives
+for their own generation and approval resumes. Completed one-shots count toward the schedule
+limit until deleted. Normal scheduler polling can delay actual dispatch after the scheduled
+instant. Old schedules without origin metadata remain manageable through the normal UI; an
+unprojected chat cannot discover them through these tools without proof of its origin.
+
 # Unattended MCP support
 
 Scheduled chats validate the selected agent and its accessible graph agents before creation,

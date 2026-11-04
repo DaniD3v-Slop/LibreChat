@@ -8,6 +8,8 @@ import type {
   SteerQueueItem,
   SteerReceipt,
 } from '~/stream/interfaces/IJobStore';
+import type { ScheduleFireContext } from '~/schedules/trigger';
+import type { SchedulesService } from '~/schedules/service';
 import type { SteerRequestUser } from './refs';
 import {
   STEER_ENQUEUE_NOT_RUNNING,
@@ -121,11 +123,15 @@ export interface SteerRunContext {
 }
 
 /**
- * Host-injected dependencies for the steer guard ladder. All optional — a
- * host that omits them gets shape-level sanitization only (pre-round-13
- * behavior); the LibreChat route wires all three.
+ * Host-injected dependencies for the steer guard ladder. Ordinary package
+ * callers retain shape-level sanitization when optional access/file adapters
+ * are omitted. Scheduled delivery also requires the live-schedule validator.
  */
 export interface SteerRequestDeps {
+  /** Schedule provenance resolved by the authenticated internal-trigger host. */
+  scheduleContext?: ScheduleFireContext;
+  /** Revalidate fresh scheduled delivery against the live schedule and policy. */
+  isScheduleLive?: SchedulesService['isScheduleLive'];
   /** Upper protocol bound selected by the HTTP host from the request markers
    * and its rollout gate. Direct package callers that omit it retain the
    * current-package (v2) behavior. */
@@ -483,6 +489,9 @@ async function handleSteerRequestInternal(
       ) {
         return { status: 409, body: { code: 'STEER_IDEMPOTENCY_CONFLICT' } };
       }
+      if (deps.scheduleContext != null) {
+        return receiptResponse(conversationId, receipt);
+      }
       if (
         !(await markSteerFilesUsed(
           streamId,
@@ -522,6 +531,11 @@ async function handleSteerRequestInternal(
     return { status: 409, body: { code: 'RUN_REPLACED' } };
   }
 
+  const schedule = deps.scheduleContext;
+  if (schedule != null && (!schedule.agentId || schedule.agentId !== job.metadata?.agent_id)) {
+    return { status: 403, body: { code: 'SCHEDULE_AGENT_CHANGED' } };
+  }
+
   /** A steer is model-bound instruction text for the ORIGINATING agent, so it
    *  must clear the same role/ACL gates the chat path runs — revoked access
    *  mid-run must not keep injecting. */
@@ -534,6 +548,17 @@ async function handleSteerRequestInternal(
       logger.warn(`[handleSteerRequest] Agent access denied for ${streamId} by ${user.id}`);
       return { status: 403, body: { code: 'FORBIDDEN' } };
     }
+  }
+
+  if (
+    schedule != null &&
+    !(await deps.isScheduleLive?.(schedule.scheduleId, schedule.configRevision, {
+      automatic: !schedule.manual,
+      policy: true,
+      scheduledFor: schedule.scheduledFor,
+    }))
+  ) {
+    return { status: 403, body: { code: 'SCHEDULE_NO_LONGER_ACTIVE' } };
   }
 
   if (job.status === 'requires_action') {
@@ -623,6 +648,18 @@ async function handleSteerRequestInternal(
   const ownerAcceptsQuotes =
     owner.metadata?.steerQuotesExecutionId != null &&
     owner.metadata.steerQuotesExecutionId === owner.metadata.providerExecutionId;
+  if (deps.scheduleContext != null) {
+    // Persist before enqueue: the active request can execute tools immediately
+    // after injection, and a pause must retain the same recursion restriction.
+    await GenerationJobManager.updateMetadata(streamId, { scheduleSteered: true }, owner.createdAt);
+    const marked = await GenerationJobManager.getJob(streamId);
+    if (marked?.createdAt !== owner.createdAt) {
+      return { status: 409, body: { code: 'RUN_REPLACED' } };
+    }
+    if (marked.metadata?.scheduleSteered !== true) {
+      return { status: 503, body: { code: 'SCHEDULE_STEER_CONTEXT_UNAVAILABLE' } };
+    }
+  }
   const item: SteerQueueItem = {
     steerId: randomUUID(),
     ...(protocol.value === 2 && typeof clientSteerId === 'string' && { clientSteerId }),
