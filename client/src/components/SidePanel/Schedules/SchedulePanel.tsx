@@ -9,10 +9,12 @@ import ScheduleEmptyState from './ScheduleEmptyState';
 import { useSchedulesQuery } from '~/data-provider';
 import { useLocalize, useHasAccess } from '~/hooks';
 import ScheduleDialog from './ScheduleDialog';
+import { useChatContext } from '~/Providers';
 import ScheduleCard from './ScheduleCard';
 
 export default function SchedulePanel() {
   const localize = useLocalize();
+  const { conversation } = useChatContext();
   const { data, isLoading, isError, refetch } = useSchedulesQuery();
   const [createOpen, setCreateOpen] = useState(false);
 
@@ -43,6 +45,7 @@ export default function SchedulePanel() {
           <div key={schedule.id} role="listitem">
             <ScheduleCard
               schedule={schedule}
+              currentConversation={conversation ?? undefined}
               // The raw id is a poor label but an honest one: it only shows for a
               // project outside the loaded pages, and beats claiming no scope.
               projectName={
@@ -103,7 +106,13 @@ export default function SchedulePanel() {
         </PanelFooter>
       )}
 
-      {createOpen && <ScheduleDialog open={createOpen} onOpenChange={setCreateOpen} />}
+      {createOpen && (
+        <ScheduleDialog
+          open={createOpen}
+          onOpenChange={setCreateOpen}
+          currentConversation={conversation ?? undefined}
+        />
+      )}
     </div>
   );
 }

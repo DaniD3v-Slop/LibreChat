@@ -15,6 +15,7 @@ import {
   useToastContext,
 } from '@librechat/client';
 import type { TSchedule, ScheduleRunStatus, ScheduleDisabledReason } from 'librechat-data-provider';
+import type { ScheduleConversation } from './ScheduleDialog';
 import type { ImmediateScheduleMCPFailure } from './errors';
 import type { TranslationKeys } from '~/hooks';
 import {
@@ -39,6 +40,7 @@ import { describeCadence } from './cadence';
 
 interface ScheduleCardProps {
   schedule: TSchedule;
+  currentConversation?: ScheduleConversation;
   /** Resolved by the panel, which holds ONE project-name lookup for the whole list —
    *  deriving it per card is O(schedules x projects) on every project-list refresh. */
   projectName?: string | null;
@@ -72,7 +74,11 @@ const DISABLED_REASON_LABELS: Record<ScheduleDisabledReason, TranslationKeys> = 
   project_required: 'com_ui_schedule_disabled_project_required',
 };
 
-export default function ScheduleCard({ schedule, projectName }: ScheduleCardProps) {
+export default function ScheduleCard({
+  schedule,
+  projectName,
+  currentConversation,
+}: ScheduleCardProps) {
   const localize = useLocalize();
   const navigate = useNavigate();
   const lastRunKey = scheduleLastRunKey(schedule);
@@ -317,6 +323,7 @@ export default function ScheduleCard({ schedule, projectName }: ScheduleCardProp
           open={editOpen}
           onOpenChange={setEditOpen}
           schedule={schedule}
+          currentConversation={currentConversation}
           triggerRef={editButtonRef as React.MutableRefObject<HTMLButtonElement | null>}
         />
       )}

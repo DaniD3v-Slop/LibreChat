@@ -4,7 +4,7 @@ import { ToastProvider } from '@librechat/client';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, render, screen, waitFor, within } from '@testing-library/react';
-import type { TSchedule } from 'librechat-data-provider';
+import type { TSchedule, TConversation } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
 import ScheduleDialog from '../ScheduleDialog';
 
@@ -76,7 +76,11 @@ jest.mock('~/data-provider', () => ({
   useUpdateScheduleMutation: () => ({ mutate: mockMutate, isLoading: false }),
 }));
 
-const renderDialog = (schedule?: Partial<TSchedule>, onOpenChange = jest.fn()) => {
+const renderDialog = (
+  schedule?: Partial<TSchedule>,
+  onOpenChange = jest.fn(),
+  currentConversation?: Pick<TConversation, 'conversationId' | 'agent_id' | 'chatProjectId'>,
+) => {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
@@ -92,6 +96,7 @@ const renderDialog = (schedule?: Partial<TSchedule>, onOpenChange = jest.fn()) =
       open={true}
       onOpenChange={onOpenChange}
       schedule={schedule as TSchedule | undefined}
+      currentConversation={currentConversation}
     />,
     { wrapper: Wrapper },
   );
@@ -123,6 +128,94 @@ const fillRequiredFields = async (user: ReturnType<typeof userEvent.setup>) => {
 };
 
 describe('ScheduleDialog', () => {
+  beforeAll(() => {
+    HTMLElement.prototype.hasPointerCapture = jest.fn(() => false);
+    HTMLElement.prototype.scrollIntoView = jest.fn();
+  });
+
+  it.each(['continue', 'steer'] as const)(
+    'creates %s in the current chat with its locked agent and project',
+    async (target) => {
+      mockLimits.requireProject = true;
+      const user = userEvent.setup();
+      renderDialog(undefined, jest.fn(), {
+        conversationId: 'current-chat',
+        agent_id: 'agent-2',
+        chatProjectId: 'proj-2',
+      });
+      await user.type(screen.getByPlaceholderText('com_ui_schedule_name_placeholder'), 'Follow up');
+      await user.type(
+        screen.getByPlaceholderText('com_ui_schedule_prompt_placeholder'),
+        'Check progress',
+      );
+      await user.click(screen.getByRole('combobox', { name: 'com_ui_schedule_mode' }));
+      await user.click(
+        await screen.findByRole('option', { name: `com_ui_schedule_mode_${target}` }),
+      );
+      expect(screen.getByRole('combobox', { name: 'com_ui_agent' })).toBeDisabled();
+      expect(screen.getByRole('combobox', { name: 'com_ui_project' })).toBeDisabled();
+      expect(screen.getByRole('combobox', { name: 'com_ui_agent' })).toHaveTextContent(
+        'Digest Agent',
+      );
+      expect(screen.getByRole('combobox', { name: 'com_ui_project' })).toHaveTextContent(
+        'Research',
+      );
+      await user.click(screen.getByRole('button', { name: 'com_ui_create' }));
+      await waitFor(() =>
+        expect(mockMutate).toHaveBeenCalledWith(
+          expect.objectContaining({ target, conversationId: 'current-chat', agent_id: 'agent-2' }),
+        ),
+      );
+      expect(mockMutate.mock.calls[0][0]).not.toHaveProperty('chatProjectId');
+    },
+  );
+
+  it('offers only new-chat mode without a saved agent chat', async () => {
+    const user = userEvent.setup();
+    renderDialog(undefined, jest.fn(), { conversationId: 'new', agent_id: 'agent-2' });
+    await user.click(screen.getByRole('combobox', { name: 'com_ui_schedule_mode' }));
+    expect(screen.getByRole('option', { name: 'com_ui_schedule_mode_new' })).toBeInTheDocument();
+    expect(
+      screen.queryByRole('option', { name: 'com_ui_schedule_mode_continue' }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('option', { name: 'com_ui_schedule_mode_steer' }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('keeps an edited schedule linked to its stored chat when opened from another chat', async () => {
+    const user = userEvent.setup();
+    renderDialog(
+      storedSchedule({
+        target: 'continue',
+        conversationId: 'original-chat',
+        chatProjectId: 'proj-1',
+      }),
+      jest.fn(),
+      { conversationId: 'other-chat', agent_id: 'agent-2', chatProjectId: 'proj-2' },
+    );
+    expect(screen.getByRole('combobox', { name: 'com_ui_agent' })).toHaveTextContent(
+      'Research Agent',
+    );
+    expect(screen.getByRole('combobox', { name: 'com_ui_project' })).toHaveTextContent(
+      'Weekly Ops',
+    );
+    await user.click(screen.getByRole('combobox', { name: 'com_ui_schedule_mode' }));
+    await user.click(await screen.findByRole('option', { name: 'com_ui_schedule_mode_steer' }));
+    await user.click(screen.getByRole('button', { name: 'com_ui_save' }));
+    await waitFor(() =>
+      expect(mockMutate).toHaveBeenCalledWith({
+        id: 'sched-1',
+        payload: {
+          target: 'steer',
+          conversationId: 'original-chat',
+          agent_id: 'agent-1',
+          expectedConfigRevision: 3,
+        },
+      }),
+    );
+  });
+
   it.each(['continue', 'steer'] as const)(
     'preserves an existing %s destination when renaming',
     async (target) => {
