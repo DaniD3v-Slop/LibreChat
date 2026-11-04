@@ -21,10 +21,13 @@ const {
   timeAuthUserLookup,
   getHttpsProxyAgent,
   isAccessTokenJwt,
+  authorizeOpenIDProviderBearer,
+  toOpenIDBearerAuthorizationVerdict,
   math,
 } = require('@librechat/api');
 const { updateUser, findUser, isAgentTriggerPrincipalActive } = require('~/models');
 const getLogStores = require('~/cache/getLogStores');
+const openIdSessions = require('~/server/services/OpenIDSessions');
 
 function decodeJwtExpiry(token) {
   try {
@@ -226,6 +229,32 @@ const openIdJwtLogin = (openIdConfig) => {
                   message: 'Account deletion is in progress',
                   code: 'ACCOUNT_DELETION_IN_PROGRESS',
                 });
+                return;
+              }
+
+              const openIdClientId = openIdSessions.getOpenIdClientId();
+              const sessionAuthorization = await authorizeOpenIDProviderBearer(
+                {
+                  issuer: openidIssuer,
+                  clientId: openIdClientId,
+                  subject: payload?.sub,
+                  sid: payload?.sid,
+                  user: user.id,
+                  tenantId: user.tenantId,
+                  payload,
+                },
+                openIdSessions.sessionAuthorizationRef,
+              );
+              const verdict = toOpenIDBearerAuthorizationVerdict(sessionAuthorization);
+              if (verdict.outcome === 'unavailable') {
+                done(verdict.error);
+                return;
+              }
+              if (verdict.outcome === 'denied') {
+                logger.warn(
+                  `[openIdJwtLogin] OpenID session authorization denied for user ${user.id}: ${verdict.code}`,
+                );
+                done(null, false, { message: verdict.message, code: verdict.code });
                 return;
               }
               /** Absent on the full doc means local user; null skips getUserPrincipals' fallback lookup */
