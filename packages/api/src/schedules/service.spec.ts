@@ -1160,6 +1160,24 @@ describe('isScheduleLive policy recheck', () => {
       return service;
     }
 
+    it('reuses the completed one-shot occurrence for resume policy checks', async () => {
+      const service = makeProjectService(
+        { enabled: false, disabledReason: 'completed', cadence: { frequency: 'once' } },
+        {},
+        { _id: 'proj-1' },
+        { run: { recorded: true } },
+      );
+
+      await expect(
+        service.isScheduleLive('s1', undefined, {
+          automatic: true,
+          policy: true,
+          scheduledFor: '2026-08-17T12:00:00.000Z',
+        }),
+      ).resolves.toBe(true);
+      expect(service.engineDeps.methods.getScheduleRunProject).toHaveBeenCalledTimes(1);
+    });
+
     it('refuses when the destination project was deleted', async () => {
       const service = makeProjectService({ chatProjectId: 'proj-gone' }, {}, null);
       await expect(service.isScheduleLive('s1', undefined, { policy: true })).resolves.toBe(false);
@@ -1778,6 +1796,63 @@ describe('scheduled resume capacity', () => {
     expect(methods.releaseRunResumeClaim).toHaveBeenCalledWith('s1', new Date(scheduledFor), 0);
   });
 
+  it('resumes only the recorded occurrence of a completed one-shot', async () => {
+    const { service, methods } = makeResumeService({ takenSlots: [], unslotted: 0 });
+    methods.getScheduleById.mockResolvedValue({
+      id: 's1',
+      user: 'user-1',
+      enabled: false,
+      configRevision: 3,
+      cadence: { frequency: 'once', at: '2026-08-17T12:00' },
+      disabledReason: 'completed',
+    } as never);
+    const lookup = jest.fn().mockResolvedValue({ recorded: true });
+    service.engineDeps.methods.getScheduleRunProject = lookup;
+    const scheduledFor = '2026-08-17T12:00:00.000Z';
+
+    await expect(
+      service.claimScheduleResume('s1', scheduledFor, {
+        automatic: true,
+        expectedConfigRevision: 3,
+      }),
+    ).resolves.toEqual({
+      capacitySlot: 0,
+      claimToken: 'resume-token',
+      leaseBy: 'resume:resume-token',
+    });
+    expect(lookup).toHaveBeenCalledWith('s1', scheduledFor);
+    lookup.mockResolvedValue(null);
+    await expect(
+      service.claimScheduleResume('s1', scheduledFor, {
+        automatic: true,
+        expectedConfigRevision: 3,
+      }),
+    ).resolves.toEqual({ conflict: 'inactive' });
+    expect(methods.markRunResumeClaimed).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses a completed one-shot resume once deletion starts', async () => {
+    const { service, methods } = makeResumeService({ takenSlots: [], unslotted: 0 });
+    methods.getScheduleById.mockResolvedValue({
+      id: 's1',
+      user: 'user-1',
+      enabled: false,
+      configRevision: 3,
+      deleting: true,
+      cadence: { frequency: 'once', at: '2026-08-17T12:00' },
+      disabledReason: 'completed',
+    } as never);
+    service.engineDeps.methods.getScheduleRunProject = jest
+      .fn()
+      .mockResolvedValue({ recorded: true });
+
+    await expect(service.claimScheduleResume('s1', '2026-08-17T12:00:00.000Z')).resolves.toEqual({
+      conflict: 'inactive',
+    });
+    expect(methods.acquireResumeLease).not.toHaveBeenCalled();
+    expect(methods.markRunResumeClaimed).not.toHaveBeenCalled();
+  });
+
   it('leaves the paused row untouched when deployment capacity is full', async () => {
     const { service, methods } = makeResumeService({ takenSlots: [0], unslotted: 0 });
 
@@ -1927,7 +2002,15 @@ describe('durable trigger wiring', () => {
 describe('admission revision fence', () => {
   const noRuns = () => jest.fn<Promise<ActiveRun[]>, [string]>().mockResolvedValue([]);
 
-  function serviceWithSchedule(schedule: { configRevision?: number; enabled?: boolean } | null) {
+  function serviceWithSchedule(
+    schedule: {
+      configRevision?: number;
+      enabled?: boolean;
+      deleting?: boolean;
+      disabledReason?: string;
+      cadence?: { frequency: string };
+    } | null,
+  ) {
     const service = makeService(noRuns());
     (
       service.engineDeps.methods as unknown as {
@@ -1957,6 +2040,48 @@ describe('admission revision fence', () => {
   it('refuses an AUTOMATIC fire once the schedule was disabled', async () => {
     const service = serviceWithSchedule({ configRevision: 3, enabled: false });
     expect(await service.isScheduleLive('sched-1', 3, { automatic: true })).toBe(false);
+  });
+
+  it('admits a completed one-shot only for its recorded occurrence', async () => {
+    const service = serviceWithSchedule({
+      configRevision: 3,
+      enabled: false,
+      disabledReason: 'completed',
+      cadence: { frequency: 'once' },
+    });
+    const getScheduleRunProject = jest.fn().mockResolvedValue({ recorded: true });
+    service.engineDeps.methods.getScheduleRunProject = getScheduleRunProject;
+    const scheduledFor = '2026-01-01T00:00:00.000Z';
+
+    await expect(
+      service.isScheduleLive('sched-1', 3, { automatic: true, scheduledFor }),
+    ).resolves.toBe(true);
+    expect(getScheduleRunProject).toHaveBeenCalledWith('sched-1', scheduledFor);
+    await expect(service.isScheduleLive('sched-1', 3, { automatic: true })).resolves.toBe(false);
+    getScheduleRunProject.mockResolvedValue(null);
+    await expect(
+      service.isScheduleLive('sched-1', 3, { automatic: true, scheduledFor }),
+    ).resolves.toBe(false);
+  });
+
+  it('refuses a completed one-shot marked for deletion even when its run exists', async () => {
+    const service = serviceWithSchedule({
+      configRevision: 3,
+      enabled: false,
+      deleting: true,
+      disabledReason: 'completed',
+      cadence: { frequency: 'once' },
+    });
+    service.engineDeps.methods.getScheduleRunProject = jest
+      .fn()
+      .mockResolvedValue({ recorded: true });
+
+    await expect(
+      service.isScheduleLive('sched-1', 3, {
+        automatic: true,
+        scheduledFor: '2026-01-01T00:00:00.000Z',
+      }),
+    ).resolves.toBe(false);
   });
 
   it('still admits Run Now on a disabled schedule', async () => {

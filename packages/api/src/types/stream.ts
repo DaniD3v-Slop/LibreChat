@@ -79,6 +79,8 @@ export interface GenerationJobMetadata {
   scheduledFor?: string;
   scheduleConfigRevision?: number;
   scheduleManual?: boolean;
+  /** A trusted schedule injected instructions into this generation. */
+  scheduleSteered?: boolean;
   /** Intended terminal classification retained when Mongo outcome persistence
    * fails. The scheduler reconciler consumes this evidence before clearing the job. */
   scheduleOutcome?: 'success' | 'error' | 'interrupted' | 'skipped_balance';

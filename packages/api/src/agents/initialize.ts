@@ -110,6 +110,7 @@ import { createConfiguredContentInspector, inspectContent } from '../protection/
 import { assertAgentAttachmentLimits, isModelBoundAttachmentFile } from './attachments';
 import { resolveAttachedWorkspaceCommandTimeoutMax } from '~/code/command';
 import { assertModelBoundContent } from '../middleware/modelBoundContent';
+import { expandScheduleToolNames, isScheduleWriteTool } from './schedule';
 import { isImplicitStatefulCodeRouteAvailable } from '../code/config';
 import { registerMemoryTools, memoryToolUsageGuard } from './memory';
 import { applyIntentLabels, sanitizeIntentLabels } from './intent';
@@ -118,9 +119,11 @@ import { resolveToolRoleGrants } from '~/tools/rolePermissions';
 import { createRequestAgentExecutionContext } from './runtime';
 import { resolveTurnDeliveryRouting } from './files/delivery';
 import { filterFilesByEndpointRuntimeConfig } from '~/files';
+import { isScheduleFireRequest } from '~/schedules/trigger';
 import { hasActiveFileFieldPolicy } from '~/protection';
 import { PARTIAL_RESOLVED_CONVERSATION } from './guard';
 import { applyBackgroundToolCalls } from './background';
+import { isValidTimezone } from '~/schedules/cadence';
 import { applyTurnDelivery } from './files/delivery';
 import { generateArtifactsPrompt } from '~/prompts';
 import { getProviderConfig } from '~/endpoints';
@@ -1914,7 +1917,9 @@ export async function initializeAgent(
     loadTools?.({
       provider,
       agentId: agent.id,
-      tools,
+      tools: isScheduleFireRequest(params.req)
+        ? expandScheduleToolNames(tools).filter((name) => !isScheduleWriteTool(name))
+        : tools,
       model: agent.model,
       tool_options: agent.tool_options,
       tool_resources,
@@ -2256,6 +2261,32 @@ export async function initializeAgent(
   agent.model_parameters = { ...options.llmConfig } as Agent['model_parameters'];
   if (options.configOptions) {
     (agent.model_parameters as Record<string, unknown>).configuration = options.configOptions;
+  }
+
+  const hasSchedulingTimeTools = ['create_schedule', 'update_schedule'].some(
+    (name) =>
+      toolRegistry?.has(name) === true ||
+      toolDefinitions?.some((definition) => definition.name === name) === true ||
+      structuredTools?.some((tool) => tool.name === name) === true,
+  );
+  const schedulingTimezone = runtime.requestBody.timezone;
+  if (
+    hasSchedulingTimeTools &&
+    !isScheduleFireRequest(params.req) &&
+    typeof schedulingTimezone === 'string' &&
+    !/^[+-]/.test(schedulingTimezone) &&
+    isValidTimezone(schedulingTimezone)
+  ) {
+    appendAdditionalInstructions(
+      agent,
+      replaceSpecialVars({
+        text:
+          'Current local date and time: {{current_datetime}}. Resolve relative scheduling dates such as tomorrow from this date. ' +
+          "Schedule times use the user's timezone automatically. Do not ask for their timezone.",
+        now: runtime.turnStartedAt,
+        timezone: schedulingTimezone,
+      }),
+    );
   }
 
   if (agent.instructions && agent.instructions !== '') {

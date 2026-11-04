@@ -2,6 +2,11 @@ import React from 'react';
 import { render, screen } from '@testing-library/react';
 import ChatView from '../ChatView';
 
+jest.mock('~/components/SidePanel/Schedules/useRunSync', () => ({
+  __esModule: true,
+  default: jest.fn(),
+}));
+
 let mockConversation: Record<string, unknown> | null;
 
 jest.mock('react-router-dom', () => ({
@@ -24,10 +29,13 @@ jest.mock('@librechat/client', () => ({
 
 jest.mock('librechat-data-provider', () => ({
   Constants: { NEW_CONVO: 'new', SEARCH: 'search' },
+  PermissionTypes: { SCHEDULES: 'SCHEDULES' },
+  Permissions: { USE: 'USE' },
   buildTree: ({ messages }: { messages: unknown[] }) => messages,
 }));
 
 jest.mock('~/hooks', () => ({
+  useHasAccess: () => false,
   useAddedResponse: () => ({}),
   useResumeOnLoad: jest.fn(),
   useAdaptiveSSE: jest.fn(),
@@ -54,6 +62,8 @@ jest.mock('~/Providers', () => {
 });
 
 jest.mock('~/data-provider', () => ({
+  useGetStartupConfig: () => ({ data: undefined }),
+  useSchedulesQuery: () => ({}),
   useGetMessagesByConvoId: () => ({
     data: [{ messageId: 'message-1' }],
     isLoading: false,

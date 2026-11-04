@@ -24,3 +24,12 @@ export type ExtendedJsonSchema = {
   $defs?: Record<string, ExtendedJsonSchema>;
   definitions?: Record<string, ExtendedJsonSchema>;
 };
+
+export interface ToolRegistryDefinition {
+  name: string;
+  description: string;
+  schema: ExtendedJsonSchema;
+  description_for_model?: string;
+  responseFormat?: 'content_and_artifact' | 'content';
+  toolType: 'builtin' | 'mcp' | 'action' | 'custom';
+}

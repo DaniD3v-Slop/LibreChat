@@ -100,6 +100,20 @@ async function getRun(scheduleId: string, scheduledFor: Date): Promise<ISchedule
   return run;
 }
 
+describe('conversation target persistence', () => {
+  it.each(['continue', 'steer'] as const)(
+    'roundtrips a %s target and its conversation',
+    async (target) => {
+      const conversationId = '5ae142c0-d088-46d1-a592-89a34acb8f28';
+      const schedule = await methods.createSchedule(scheduleData({ target, conversationId }));
+
+      await expect(methods.getScheduleById(schedule.id, schedule.user)).resolves.toEqual(
+        expect.objectContaining({ target, conversationId }),
+      );
+    },
+  );
+});
+
 describe('claimDueSchedule', () => {
   it('grants exactly one winner across 8 concurrent claims', async () => {
     await methods.createSchedule(scheduleData());
@@ -1440,6 +1454,62 @@ describe('acquireManualRunLease / releaseLease', () => {
 });
 
 describe('scheduled resume lease fencing', () => {
+  it('allows a completed one-shot resume while preserving the revision fence', async () => {
+    const schedule = await methods.createSchedule(
+      scheduleData({
+        cadence: { frequency: 'once', at: '2026-08-17T12:00' },
+        enabled: false,
+        disabledReason: 'completed',
+      }),
+    );
+    await expect(methods.acquireResumeLease(schedule.id, 1, true, 60_000)).resolves.toBeNull();
+    const fence = await methods.acquireResumeLease(schedule.id, 0, true, 60_000);
+
+    expect(fence).not.toBeNull();
+    await expect(
+      methods.consumeResumeLease(schedule.id, fence!.claimToken!, fence!.leaseBy!, true, 0),
+    ).resolves.toBe(true);
+  });
+
+  it.each(['expired', 'too_many_failures'] as const)(
+    'refuses a one-shot disabled for %s',
+    async (disabledReason) => {
+      const schedule = await methods.createSchedule(
+        scheduleData({
+          cadence: { frequency: 'once', at: '2026-08-17T12:00' },
+          enabled: false,
+          disabledReason,
+        }),
+      );
+
+      await expect(methods.acquireResumeLease(schedule.id, 0, true, 60_000)).resolves.toBeNull();
+    },
+  );
+
+  it('refuses a completed recurring schedule', async () => {
+    const schedule = await methods.createSchedule(
+      scheduleData({ enabled: false, disabledReason: 'completed' }),
+    );
+    await expect(methods.acquireResumeLease(schedule.id, 0, true, 60_000)).resolves.toBeNull();
+  });
+
+  it('refuses a completed one-shot disabled again before the final handoff', async () => {
+    const schedule = await methods.createSchedule(
+      scheduleData({
+        cadence: { frequency: 'once', at: '2026-08-17T12:00' },
+        enabled: false,
+        disabledReason: 'completed',
+      }),
+    );
+    const fence = await methods.acquireResumeLease(schedule.id, 0, true, 60_000);
+    expect(fence).not.toBeNull();
+    await methods.disableSchedule(schedule.id, 'too_many_failures', fence!.claimToken!);
+
+    await expect(
+      methods.consumeResumeLease(schedule.id, fence!.claimToken!, fence!.leaseBy!, true, 0),
+    ).resolves.toBe(false);
+  });
+
   it('atomically consumes the same live config generation and releases its lease', async () => {
     const schedule = await methods.createSchedule(scheduleData());
     const fence = await methods.acquireResumeLease(schedule.id, 0, true, 60_000);
@@ -2117,6 +2187,8 @@ describe('erasure leaves an idempotency tombstone', () => {
         nextRunAt: undefined,
         clientRequestId: 'late-retry-key',
         clientRequestDigest: 'digest-1',
+        description: 'Private reason for this schedule',
+        originConversationId: 'private-origin-chat',
       }),
     );
 
@@ -2155,6 +2227,8 @@ describe('erasure leaves an idempotency tombstone', () => {
     expect(tombstone?.name).toBeUndefined();
     expect(tombstone?.cadence).toBeUndefined();
     expect(tombstone?.timezone).toBeUndefined();
+    expect(tombstone?.description).toBeUndefined();
+    expect(tombstone?.originConversationId).toBeUndefined();
 
     // Tombstones are inert to every sweep: re-erasing or re-deleting them forever
     // would pin the bounded windows.
@@ -2177,6 +2251,66 @@ describe('erasure leaves an idempotency tombstone', () => {
 });
 
 describe('deletion quiescing (soft-delete, drain, erase)', () => {
+  it.each([true, false])(
+    'preserves settled evidence for a non-deleting schedule enabled=%s',
+    async (enabled) => {
+      const schedule = await methods.createSchedule(
+        scheduleData({
+          enabled,
+          ...(enabled
+            ? {}
+            : {
+                cadence: { frequency: 'once', at: '2026-07-20T12:00' },
+                disabledReason: 'completed',
+              }),
+        }),
+      );
+      const scheduledFor = new Date('2026-07-20T12:00:00Z');
+      await methods.insertScheduleRun(runData(schedule, { scheduledFor }));
+      await methods.recordRunOutcome({
+        scheduleId: schedule.id,
+        scheduledFor,
+        status: 'success',
+        autoDisableAfterFailures: 5,
+      });
+
+      await expect(methods.eraseScheduleIfDrained(schedule.id)).resolves.toBe(false);
+
+      expect(await methods.getScheduleById(schedule.id, schedule.user)).not.toBeNull();
+      expect((await getRun(schedule.id, scheduledFor)).status).toBe('success');
+      await expect(
+        methods.insertScheduleRun(runData(schedule, { scheduledFor })),
+      ).resolves.toBeNull();
+    },
+  );
+
+  it('preserves settled evidence through reversible account-deletion suspension', async () => {
+    const schedule = await methods.createSchedule(scheduleData());
+    const scheduledFor = new Date('2026-07-20T12:00:00Z');
+    await methods.insertScheduleRun(runData(schedule, { scheduledFor, status: 'success' }));
+    await methods.suspendUserSchedulesForDeletion(schedule.user, 'attempt-preserve');
+
+    await expect(methods.eraseScheduleIfDrained(schedule.id)).resolves.toBe(false);
+
+    expect((await getRun(schedule.id, scheduledFor)).status).toBe('success');
+    await methods.restoreUserSchedulesFromDeletion(schedule.user, 'attempt-preserve');
+    expect((await getSchedule(schedule.id)).enabled).toBe(true);
+    await methods.deleteSchedulesByUser(schedule.user);
+    expect(await ScheduleRun.countDocuments({ scheduleId: schedule.id })).toBe(0);
+    expect(await methods.getScheduleById(schedule.id)).toBeNull();
+  });
+
+  it('requires a deleting schedule before erasing orphaned run evidence', async () => {
+    const schedule = await methods.createSchedule(scheduleData());
+    const scheduledFor = new Date('2026-07-20T12:00:00Z');
+    await methods.insertScheduleRun(runData(schedule, { scheduledFor, status: 'success' }));
+    await Schedule.deleteOne({ id: schedule.id });
+
+    await expect(methods.eraseScheduleIfDrained(schedule.id)).resolves.toBe(false);
+
+    expect((await getRun(schedule.id, scheduledFor)).status).toBe('success');
+  });
+
   it('markScheduleDeleting hides + un-claims; erase waits for active runs to drain', async () => {
     const schedule = await methods.createScheduleWithSlot(scheduleData(), 10);
     const sched = schedule as ISchedule;
@@ -3040,6 +3174,30 @@ describe('erasure sweep rotation and idempotency-key lookup', () => {
       Schedule.create(scheduleData({ cadence: { frequency: 'daily' } as ISchedule['cadence'] })),
     ).rejects.toThrow(/hour/);
   });
+
+  it('persists a one-time cadence as its wall-clock instant alone', async () => {
+    const created = await Schedule.create(
+      scheduleData({ cadence: { frequency: 'once', at: '2026-12-24T18:30' } }),
+    );
+
+    const stored = await getSchedule(created.id);
+    expect(stored.cadence).toMatchObject({ frequency: 'once', at: '2026-12-24T18:30' });
+    expect('hour' in stored.cadence).toBe(false);
+    expect('expression' in stored.cadence).toBe(false);
+  });
+
+  it('refuses a one-time cadence without a well-formed instant', async () => {
+    await expect(
+      Schedule.create(scheduleData({ cadence: { frequency: 'once' } as ISchedule['cadence'] })),
+    ).rejects.toThrow(/at/);
+    await expect(
+      Schedule.create(
+        scheduleData({
+          cadence: { frequency: 'once', at: '2026-12-24 18:30' } as ISchedule['cadence'],
+        }),
+      ),
+    ).rejects.toThrow(/at/);
+  });
 });
 
 describe('scheduled MCP tool failure receipt', () => {
@@ -3352,4 +3510,107 @@ it('does not apply a late MCP disable after a newer successful occurrence', asyn
     autoDisableAfterFailures: 5,
   });
   expect((await getSchedule(schedule.id)).enabled).toBe(true);
+});
+
+describe('inactive scheduled-steer outcomes', () => {
+  it('projects inactive skips idempotently without counting a run or failure', async () => {
+    const schedule = await methods.createSchedule(
+      scheduleData({ balanceSkipCount: 3, failureCount: 2 }),
+    );
+    const scheduledFor = new Date('2026-11-04T12:00:00Z');
+    await methods.recordSkippedRun({
+      scheduleId: schedule.id,
+      user: schedule.user,
+      scheduledFor,
+      status: 'skipped_inactive',
+    });
+    await methods.recordSkippedRun({
+      scheduleId: schedule.id,
+      user: schedule.user,
+      scheduledFor,
+      status: 'skipped_inactive',
+    });
+    expect(await getSchedule(schedule.id)).toMatchObject({
+      runCount: 0,
+      failureCount: 2,
+      balanceSkipCount: 0,
+      lastRun: { status: 'skipped_inactive' },
+    });
+    expect(await getRun(schedule.id, scheduledFor)).toMatchObject({
+      status: 'skipped_inactive',
+      bookkept: true,
+    });
+  });
+
+  it('recovers inactive-skip bookkeeping after a crash', async () => {
+    const schedule = await methods.createSchedule(scheduleData());
+    const scheduledFor = new Date('2026-11-04T12:00:00Z');
+    await methods.insertScheduleRun(
+      runData(schedule, { scheduledFor, status: 'skipped_inactive', bookkept: false }),
+    );
+    const pending = await methods.getUnbookkeptRuns(new Date(Date.now() + 1000), 20);
+    expect(pending).toHaveLength(1);
+    await methods.finalizeBookkeeping({
+      scheduleId: schedule.id,
+      scheduledFor,
+      status: 'skipped_inactive',
+      autoDisableAfterFailures: 5,
+    });
+    expect((await getSchedule(schedule.id)).lastRun?.status).toBe('skipped_inactive');
+    expect(await methods.getUnbookkeptRuns(new Date(Date.now() + 1000), 20)).toHaveLength(0);
+  });
+});
+
+describe('agent tool schedule scope', () => {
+  it('scopes list and ID reads by user, agent and current project', async () => {
+    const user = new mongoose.Types.ObjectId();
+    const own = await methods.createSchedule(
+      scheduleData({ user, agent_id: 'agent-scope', chatProjectId: 'project-a' }),
+    );
+    await methods.createSchedule(
+      scheduleData({ user, agent_id: 'agent-other', chatProjectId: 'project-a' }),
+    );
+    const otherProject = await methods.createSchedule(
+      scheduleData({ user, agent_id: 'agent-scope', chatProjectId: 'project-b' }),
+    );
+    const scope = { agentId: 'agent-scope', conversationId: 'origin-a', projectId: 'project-a' };
+
+    expect((await methods.getSchedulesByUser(user, scope)).map((row) => row.id)).toEqual([own.id]);
+    expect(await methods.getScheduleById(otherProject.id, user, scope)).toBeNull();
+    expect(await methods.getScheduleById(own.id, user, scope)).toMatchObject({ id: own.id });
+  });
+
+  it('scopes unprojected schedules to their captured originating chat', async () => {
+    const user = new mongoose.Types.ObjectId();
+    const own = await methods.createSchedule(
+      scheduleData({ user, agent_id: 'agent-scope', originConversationId: 'origin-a' }),
+    );
+    const otherChat = await methods.createSchedule(
+      scheduleData({ user, agent_id: 'agent-scope', originConversationId: 'origin-b' }),
+    );
+    const scope = { agentId: 'agent-scope', conversationId: 'origin-a', projectId: null };
+
+    expect((await methods.getSchedulesByUser(user, scope)).map((row) => row.id)).toEqual([own.id]);
+    expect(await methods.getScheduleById(otherChat.id, user, scope)).toBeNull();
+  });
+
+  it('fences updates and deletion admission after a schedule leaves scope', async () => {
+    const user = new mongoose.Types.ObjectId();
+    const row = await methods.createSchedule(
+      scheduleData({ user, agent_id: 'agent-scope', chatProjectId: 'project-a' }),
+    );
+    const scope = { agentId: 'agent-scope', conversationId: 'origin-a', projectId: 'project-a' };
+    await methods.updateScheduleById(row.id, user, { chatProjectId: 'project-b' });
+
+    expect(
+      await methods.updateScheduleById(row.id, user, { prompt: 'Escaped edit' }, undefined, {
+        scope,
+      }),
+    ).toBeNull();
+    expect(await methods.markScheduleDeleting(row.id, user, scope)).toBeNull();
+    expect(await methods.getScheduleById(row.id, user)).toMatchObject({
+      chatProjectId: 'project-b',
+      prompt: 'Summarize my inbox',
+    });
+  });
 });

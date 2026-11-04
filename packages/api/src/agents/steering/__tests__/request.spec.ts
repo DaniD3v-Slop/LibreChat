@@ -105,6 +105,289 @@ describe('handleSteerRequest (real in-memory job manager)', () => {
     await expect(GenerationJobManager.steering.peek(streamId)).resolves.toEqual([]);
   });
 
+  it('durably marks a generation steered by a schedule without changing its occurrence identity', async () => {
+    const streamId = 'scheduled-steer';
+    const job = await GenerationJobManager.createJob(streamId, user.id, streamId, {
+      initialMetadata: {
+        agent_id: 'agent-1',
+        scheduleId: 'original-schedule',
+        scheduledFor: '2026-11-04T09:00:00Z',
+      },
+    });
+    const result = await handleSteerRequest(
+      user,
+      { conversationId: streamId, generationCreatedAt: job.createdAt, text: 'Wrap up' },
+      {
+        isScheduleLive: async () => true,
+        scheduleContext: {
+          agentId: 'agent-1',
+          scheduleId: 'steering-schedule',
+          scheduledFor: '2026-11-04T10:00:00Z',
+          manual: false,
+        },
+      },
+    );
+
+    expect(result.status).toBe(202);
+    expect((await GenerationJobManager.getJob(streamId))?.metadata).toMatchObject({
+      scheduleSteered: true,
+      scheduleId: 'original-schedule',
+      scheduledFor: '2026-11-04T09:00:00Z',
+    });
+  });
+
+  it('does not enqueue a scheduled steer if its recursion marker cannot be persisted', async () => {
+    const streamId = 'scheduled-steer-metadata-failure';
+    const job = await GenerationJobManager.createJob(streamId, user.id, streamId, {
+      initialMetadata: { agent_id: 'agent-1' },
+    });
+    jest.spyOn(GenerationJobManager, 'updateMetadata').mockResolvedValueOnce(undefined);
+    const result = await handleSteerRequest(
+      user,
+      { conversationId: streamId, generationCreatedAt: job.createdAt, text: 'Wrap up' },
+      {
+        isScheduleLive: async () => true,
+        scheduleContext: {
+          agentId: 'agent-1',
+          scheduleId: 's1',
+          scheduledFor: '2026-11-04T10:00:00Z',
+          manual: false,
+        },
+      },
+    );
+
+    expect(result).toEqual({ status: 503, body: { code: 'SCHEDULE_STEER_CONTEXT_UNAVAILABLE' } });
+    expect(await GenerationJobManager.steering.peek(streamId)).toEqual([]);
+  });
+
+  it('does not mark the replacement generation when a scheduled steer races replacement', async () => {
+    const streamId = 'scheduled-steer-replacement';
+    const original = await GenerationJobManager.createJob(streamId, user.id, streamId, {
+      initialMetadata: { agent_id: 'agent-1' },
+    });
+    const updateMetadata = GenerationJobManager.updateMetadata.bind(GenerationJobManager);
+    jest.spyOn(GenerationJobManager, 'updateMetadata').mockImplementationOnce(async (...args) => {
+      await GenerationJobManager.createJob(streamId, user.id, streamId, {
+        initialMetadata: { agent_id: 'agent-1' },
+      });
+      await updateMetadata(...args);
+    });
+
+    const result = await handleSteerRequest(
+      user,
+      { conversationId: streamId, generationCreatedAt: original.createdAt, text: 'Wrap up' },
+      {
+        isScheduleLive: async () => true,
+        scheduleContext: {
+          agentId: 'agent-1',
+          scheduleId: 's1',
+          scheduledFor: '2026-11-04T10:00:00Z',
+          manual: false,
+        },
+      },
+    );
+
+    expect(result).toEqual({ status: 409, body: { code: 'RUN_REPLACED' } });
+    const replacement = await GenerationJobManager.getJob(streamId);
+    expect(replacement?.createdAt).not.toBe(original.createdAt);
+    expect(replacement?.metadata.scheduleSteered).toBeUndefined();
+    expect(await GenerationJobManager.steering.peek(streamId)).toEqual([]);
+  });
+
+  it('refuses a schedule that is no longer live before steer mutations', async () => {
+    const streamId = 'scheduled-steer-policy';
+    const job = await GenerationJobManager.createJob(streamId, user.id, streamId, {
+      initialMetadata: { agent_id: 'agent-1' },
+    });
+    const isScheduleLive = jest.fn(async () => false);
+    const getFiles = jest.fn();
+    const updateFilesUsage = jest.fn();
+    const updateMetadata = jest.spyOn(GenerationJobManager, 'updateMetadata');
+
+    const result = await handleSteerRequest(
+      user,
+      {
+        conversationId: streamId,
+        generationCreatedAt: job.createdAt,
+        text: 'Wrap up',
+        files: [{ file_id: 'f1' }],
+      },
+      {
+        scheduleContext: {
+          agentId: 'agent-1',
+          scheduleId: 's1',
+          scheduledFor: '2026-11-04T10:00:00Z',
+          configRevision: 7,
+          manual: false,
+        },
+        isScheduleLive,
+        getFiles,
+        updateFilesUsage,
+      },
+    );
+
+    expect(result).toEqual({ status: 403, body: { code: 'SCHEDULE_NO_LONGER_ACTIVE' } });
+    expect(isScheduleLive).toHaveBeenCalledWith('s1', 7, {
+      automatic: true,
+      policy: true,
+      scheduledFor: '2026-11-04T10:00:00Z',
+    });
+    expect(getFiles).not.toHaveBeenCalled();
+    expect(updateFilesUsage).not.toHaveBeenCalled();
+    expect(updateMetadata).not.toHaveBeenCalled();
+    expect(await GenerationJobManager.steering.peek(streamId)).toEqual([]);
+  });
+
+  it('requires a live-schedule validator for authenticated scheduled steers', async () => {
+    const streamId = 'scheduled-steer-policy-unavailable';
+    await GenerationJobManager.createJob(streamId, user.id, streamId, {
+      initialMetadata: { agent_id: 'agent-1' },
+    });
+    const result = await handleSteerRequest(
+      user,
+      { conversationId: streamId, text: 'Wrap up' },
+      {
+        scheduleContext: {
+          agentId: 'agent-1',
+          scheduleId: 's1',
+          scheduledFor: '2026-11-04T10:00:00Z',
+          manual: false,
+        },
+      },
+    );
+
+    expect(result).toEqual({ status: 403, body: { code: 'SCHEDULE_NO_LONGER_ACTIVE' } });
+    expect((await GenerationJobManager.getJob(streamId))?.metadata.scheduleSteered).toBeUndefined();
+    expect(await GenerationJobManager.steering.peek(streamId)).toEqual([]);
+  });
+
+  it.each([false, true])(
+    'checks exact occurrence policy for a live scheduled steer, manual=%s',
+    async (manual) => {
+      const streamId = 'scheduled-steer-live-occurrence';
+      await GenerationJobManager.createJob(streamId, user.id, streamId, {
+        initialMetadata: { agent_id: 'agent-1' },
+      });
+      const isScheduleLive = jest.fn(async () => true);
+      const result = await handleSteerRequest(
+        user,
+        { conversationId: streamId, text: 'Wrap up' },
+        {
+          scheduleContext: {
+            agentId: 'agent-1',
+            scheduleId: 'once-completed',
+            scheduledFor: '2026-11-04T10:00:00Z',
+            configRevision: 3,
+            manual,
+          },
+          isScheduleLive,
+        },
+      );
+
+      expect(result.status).toBe(202);
+      expect(isScheduleLive).toHaveBeenCalledWith('once-completed', 3, {
+        automatic: !manual,
+        policy: true,
+        scheduledFor: '2026-11-04T10:00:00Z',
+      });
+    },
+  );
+
+  it('replays an accepted scheduled steer after policy changes without further mutations', async () => {
+    const streamId = 'scheduled-steer-replay';
+    await GenerationJobManager.createJob(streamId, user.id, streamId, {
+      initialMetadata: { generationProtocolVersion: 2, agent_id: 'agent-1' },
+    });
+    const body = { conversationId: streamId, text: 'Wrap up', clientSteerId: 'occurrence_1' };
+    const scheduleContext = {
+      agentId: 'agent-1',
+      scheduleId: 's1',
+      scheduledFor: '2026-11-04T10:00:00Z',
+      manual: false,
+    };
+    const accepted = await handleSteerRequest(user, body, {
+      scheduleContext,
+      isScheduleLive: async () => true,
+    });
+    expect(accepted.status).toBe(202);
+    const isScheduleLive = jest.fn(async () => false);
+    const updateFilesUsage = jest.fn();
+    const updateMetadata = jest.spyOn(GenerationJobManager, 'updateMetadata');
+
+    const replayed = await handleSteerRequest(user, body, {
+      scheduleContext,
+      isScheduleLive,
+      updateFilesUsage,
+    });
+
+    expect(replayed.status).toBe(202);
+    expect(replayed.body).toMatchObject({ steerId: accepted.body.steerId, replayed: true });
+    expect(isScheduleLive).not.toHaveBeenCalled();
+    expect(updateFilesUsage).not.toHaveBeenCalled();
+    expect(updateMetadata).not.toHaveBeenCalled();
+    expect(await GenerationJobManager.steering.peek(streamId)).toHaveLength(1);
+  });
+
+  it.each([undefined, 'different-agent'])(
+    'refuses a scheduled steer with expected agent %s against the live generation',
+    async (expectedAgent) => {
+      const streamId = 'scheduled-steer-agent-changed';
+      await GenerationJobManager.createJob(streamId, user.id, streamId, {
+        initialMetadata: { agent_id: 'agent-1' },
+      });
+      const checkAgentAccess = jest.fn(async () => true);
+      const isScheduleLive = jest.fn(async () => true);
+      const getFiles = jest.fn();
+      const updateFilesUsage = jest.fn();
+      const updateMetadata = jest.spyOn(GenerationJobManager, 'updateMetadata');
+
+      const result = await handleSteerRequest(
+        user,
+        {
+          conversationId: streamId,
+          text: 'Wrap up',
+          files: [{ file_id: 'f1' }],
+        },
+        {
+          scheduleContext: {
+            scheduleId: 's1',
+            scheduledFor: '2026-11-04T10:00:00Z',
+            manual: false,
+            ...(expectedAgent != null && { agentId: expectedAgent }),
+          },
+          checkAgentAccess,
+          isScheduleLive,
+          getFiles,
+          updateFilesUsage,
+        },
+      );
+
+      expect(result).toEqual({ status: 403, body: { code: 'SCHEDULE_AGENT_CHANGED' } });
+      expect(checkAgentAccess).not.toHaveBeenCalled();
+      expect(isScheduleLive).not.toHaveBeenCalled();
+      expect(getFiles).not.toHaveBeenCalled();
+      expect(updateFilesUsage).not.toHaveBeenCalled();
+      expect(updateMetadata).not.toHaveBeenCalled();
+      expect(await GenerationJobManager.steering.peek(streamId)).toEqual([]);
+    },
+  );
+
+  it('does not trust schedule provenance copied into an ordinary steer body', async () => {
+    const streamId = 'scheduled-steer-spoof';
+    await GenerationJobManager.createJob(streamId, user.id);
+    const body = {
+      conversationId: streamId,
+      text: 'Wrap up',
+      agentTrigger: {
+        version: 1,
+        event: { type: 'schedule.occurrence', source: { type: 'schedule', id: 's1' } },
+      },
+    };
+
+    expect((await handleSteerRequest(user, body)).status).toBe(202);
+    expect((await GenerationJobManager.getJob(streamId))?.metadata.scheduleSteered).toBeUndefined();
+  });
+
   it('413s past the length cap', async () => {
     const result = await handleSteerRequest(user, {
       conversationId: 'c1',

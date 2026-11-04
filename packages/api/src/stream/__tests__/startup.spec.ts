@@ -410,6 +410,7 @@ describe('GenerationJobManager startup telemetry', () => {
 
     await manager.updateMetadata('stream-metadata-update', {
       sender: '',
+      scheduleSteered: true,
       agent_id: '',
       isTemporary: false,
       promptTokens: 0,
@@ -418,6 +419,7 @@ describe('GenerationJobManager startup telemetry', () => {
 
     const updated = await manager.getJob('stream-metadata-update');
     expect(updated?.metadata).toMatchObject({
+      scheduleSteered: true,
       sender: 'Agent',
       agent_id: 'agent-1',
       isTemporary: false,

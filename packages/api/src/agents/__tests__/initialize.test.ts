@@ -54,6 +54,9 @@ import type { ServerRequest, InitializeResultBase, EndpointTokenConfig } from '~
 import type { InitializeAgentDbMethods } from '../initialize';
 import type { CodeExecutionContext } from '../execution';
 import { DEFAULT_MAX_CONTEXT_TOKENS } from '../initialize';
+import { loadToolDefinitions } from '~/tools/definitions';
+import { isScheduleToolName, SCHEDULE_TOOL_NAMES } from '../schedule';
+import { canAgentGraphPause, agentRunUsesCheckpointer } from '../hitl/admission';
 
 // Mock logger — `format` must be a callable factory so @librechat/data-schemas
 // dist module-load completes cleanly; see api/test/__mocks__/logger.js.
@@ -1437,6 +1440,166 @@ describe('initializeAgent — stable and dynamic instruction fields', () => {
   });
 });
 
+function scheduleMocks(eager = false) {
+  const h = createMocks();
+  h.agent.tools = ['schedule_chat'];
+  h.loadTools.mockImplementation(async ({ tools }: { tools: string[] }) => {
+    const loaded = await loadToolDefinitions(
+      { userId: h.req.user!.id, agentId: h.agent.id, tools },
+      { isBuiltInTool: isScheduleToolName, getOrFetchMCPServerTools: async () => null },
+    );
+    return { ...loaded, tools: eager ? loaded.toolDefinitions : [] };
+  });
+  const params: Parameters<typeof initializeAgent>[0] = {
+    ...h,
+    endpointOption: { endpoint: EModelEndpoint.agents },
+    allowedProviders: new Set([Providers.OPENAI]),
+  };
+  return {
+    ...h,
+    params,
+    initialize: (isInitialAgent = true) => initializeAgent({ ...params, isInitialAgent }, h.db),
+  };
+}
+
+describe('initializeAgent — scheduled tool loading', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it.each([
+    { manual: false, eager: false },
+    { manual: true, eager: true },
+  ])('loads scheduled reads before constructing surfaces: %j', async ({ manual, eager }) => {
+    const h = scheduleMocks(eager);
+    Object.assign(h.req, { _isScheduledFire: true, _isManualScheduledFire: manual });
+    const reads = ['list_schedules', 'get_schedule'];
+    for (const isInitialAgent of [true, false]) {
+      const initialized = await h.initialize(isInitialAgent);
+      expect(h.loadTools.mock.lastCall?.[0].tools).toEqual(reads);
+      expect(initialized.toolDefinitions?.map(({ name }) => name)).toEqual(reads);
+      expect([...initialized.toolRegistry!.keys()]).toEqual(reads);
+      expect(initialized.tools).toEqual(eager ? initialized.toolDefinitions : []);
+      const admission = { agents: [initialized], policy: undefined };
+      expect(canAgentGraphPause(admission)).toBe(false);
+      expect(agentRunUsesCheckpointer(admission)).toBe(false);
+      expect(canAgentGraphPause({ ...admission, policy: { enabled: true } })).toBe(false);
+      expect(canAgentGraphPause({ ...admission, policy: { enabled: true, ask: reads } })).toBe(
+        true,
+      );
+    }
+    expect(h.agent.tools).toEqual(['schedule_chat']);
+  });
+
+  it('preserves ordinary writes and explicit approval rules', async () => {
+    const h = scheduleMocks();
+    const initialized = await h.initialize();
+    expect(initialized.toolDefinitions?.map(({ name }) => name)).toEqual(SCHEDULE_TOOL_NAMES);
+    const admission = { agents: [initialized], policy: undefined };
+    expect(canAgentGraphPause(admission)).toBe(true);
+    for (const rules of [{ allow: ['*'] }, { deny: ['*'] }]) {
+      expect(canAgentGraphPause({ ...admission, policy: { enabled: true, ...rules } })).toBe(false);
+    }
+  });
+});
+
+describe('initializeAgent — scheduling time context', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it.each(['eager instance', 'loaded definition', 'deferred registry'])(
+    'adds scheduling time context for an actual %s write tool',
+    async (registration) => {
+      const { agent, req, res, loadTools, db } = createMocks();
+      agent.instructions = 'Stable instructions';
+      agent.additional_instructions = 'Existing dynamic';
+      req.turnStartedAt = new Date('2026-11-04T23:30:00.000Z').getTime();
+      req.body = { timezone: 'Europe/Vienna' };
+      const definition = { name: 'update_schedule', description: '', parameters: {} };
+      loadTools.mockResolvedValue({
+        tools: registration === 'eager instance' ? [{ name: 'create_schedule' }] : [],
+        toolDefinitions: registration === 'loaded definition' ? [definition] : [],
+        toolRegistry:
+          registration === 'deferred registry'
+            ? new Map([[definition.name, definition]])
+            : undefined,
+        hasDeferredTools: registration === 'deferred registry',
+      });
+
+      const result = await initializeAgent(
+        {
+          req,
+          res,
+          agent,
+          loadTools,
+          endpointOption: { endpoint: EModelEndpoint.agents },
+          allowedProviders: new Set([Providers.OPENAI]),
+          isInitialAgent: true,
+        },
+        db,
+      );
+
+      expect(result.instructions).toBe('Stable instructions');
+      expect(result.additional_instructions).toContain('Existing dynamic');
+      expect(result.additional_instructions).toContain('2026-11-05 00:30:00 +01:00');
+      expect(result.additional_instructions).toContain("user's timezone automatically");
+      expect(result.additional_instructions).toContain('Do not ask');
+    },
+  );
+
+  it.each(['calculator', 'list_schedules', 'delete_schedule'])(
+    'omits scheduling time context for unrelated %s tools or an unresolved marker',
+    async (name) => {
+      const { agent, req, res, loadTools, db } = createMocks({ loadedToolDefinitions: [{ name }] });
+      agent.tools = ['schedule_chat'];
+      req.turnStartedAt = new Date('2026-11-04T23:30:00.000Z').getTime();
+      req.body = { timezone: 'Europe/Vienna' };
+
+      const result = await initializeAgent(
+        {
+          req,
+          res,
+          agent,
+          loadTools,
+          endpointOption: { endpoint: EModelEndpoint.agents },
+          allowedProviders: new Set([Providers.OPENAI]),
+          isInitialAgent: true,
+        },
+        db,
+      );
+
+      expect(result.additional_instructions).toBeUndefined();
+    },
+  );
+
+  it.each([undefined, 'Invalid/Timezone', '+01:00'])(
+    'omits scheduling time context without a valid browser IANA timezone: %s',
+    async (timezone) => {
+      const { agent, req, res, loadTools, db } = createMocks({
+        loadedToolDefinitions: [{ name: 'create_schedule' }],
+      });
+      req.turnStartedAt = new Date('2026-11-04T23:30:00.000Z').getTime();
+      req.body = { timezone };
+
+      const result = await initializeAgent(
+        {
+          req,
+          res,
+          agent,
+          loadTools,
+          endpointOption: { endpoint: EModelEndpoint.agents },
+          allowedProviders: new Set([Providers.OPENAI]),
+          isInitialAgent: true,
+        },
+        db,
+      );
+
+      expect(result.additional_instructions).toBeUndefined();
+    },
+  );
+});
+
 describe('initializeAgent — attachment scoping', () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -2321,6 +2484,33 @@ describe('initializeAgent — skill `allowed-tools` union (Phase 6)', () => {
     expect(definedNames).toEqual(
       expect.arrayContaining(['web_search', 'execute_code', 'read_file']),
     );
+  });
+
+  it('filters skill-added scheduling writes on the initial load and fallback retry', async () => {
+    const h = scheduleMocks();
+    Object.assign(h.req, { _isScheduledFire: true });
+    const { Types } = jest.requireActual<typeof import('mongoose')>('mongoose');
+    const skillId = new Types.ObjectId();
+    h.agent.tools = ['list_schedules'];
+    h.params.accessibleSkillIds = [skillId];
+    h.params.manualSkills = ['scheduling'];
+    Object.assign(h.db, {
+      listSkillsByAccess: emptyListSkillsByAccess,
+      getSkillByName: buildGetSkillByName(
+        'scheduling',
+        ['schedule_chat', 'create_schedule'],
+        skillId,
+        h.req.user!.id,
+      ),
+    });
+    h.loadTools.mockImplementationOnce(async () => undefined);
+    const initialized = await h.initialize();
+    expect(h.loadTools.mock.calls.map(([{ tools }]) => tools)).toEqual([
+      ['list_schedules', 'get_schedule'],
+      ['list_schedules'],
+    ]);
+    expect(initialized.toolDefinitions?.map(({ name }) => name)).toEqual(['list_schedules']);
+    expect(canAgentGraphPause({ agents: [initialized], policy: undefined })).toBe(false);
   });
 
   it('does not call loadTools twice when the skill declares no allowed-tools', async () => {

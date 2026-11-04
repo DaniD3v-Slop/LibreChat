@@ -1,6 +1,12 @@
 import { logger, runAsSystem, tenantStorage, isRuntimeDisabled } from '@librechat/data-schemas';
 import { getRefillEligibilityDate, Permissions, PermissionTypes } from 'librechat-data-provider';
-import type { ScheduleMethods, AppConfig, IBalance, IChatProject } from '@librechat/data-schemas';
+import type {
+  ScheduleAccessScope,
+  ScheduleMethods,
+  AppConfig,
+  IBalance,
+  IChatProject,
+} from '@librechat/data-schemas';
 import type { TCheckpointerConfig } from 'librechat-data-provider';
 import type { ScheduleMCPOutcome } from 'librechat-data-provider';
 import type { Types } from 'mongoose';
@@ -177,6 +183,8 @@ export interface SchedulesServiceDeps {
    *  them. Chat projects are user-owned, so this is both the existence check and the
    *  authorization check. */
   getChatProject: (userId: string, projectId: string) => Promise<IChatProject | null>;
+  /** Owner-scoped origin lookup, required for existing-conversation schedules. */
+  getConversation?: ScheduleEngineDeps['getConversation'];
   /** Whether this user's account deletion has begun. Fail-closed (unknown == true). */
   isUserDeleting: (userId: string) => Promise<boolean>;
   /** Shared durable trigger admission from the merged agent-trigger service. */
@@ -261,7 +269,11 @@ export interface SchedulesService {
     options?: { automatic?: boolean; policy?: boolean; scheduledFor?: string | Date },
   ) => Promise<boolean>;
   /** Soft-deletes an owner's schedule: stop claims, abort active runs, drain, erase. */
-  deleteScheduleForOwner: (scheduleId: string, userId: string) => Promise<ScheduleDeleteResult>;
+  deleteScheduleForOwner: (
+    scheduleId: string,
+    userId: string,
+    scope?: ScheduleAccessScope,
+  ) => Promise<ScheduleDeleteResult>;
   /**
    * Quiesces all of a user's schedules ahead of account deletion (reversible suspension +
    * abort + drain). `token` identifies this deletion attempt and is what a later
@@ -560,6 +572,7 @@ export function createSchedulesService(
     // Ownership IS existence for a chat project, so one lookup answers both. Failing
     // closed here would auto-disable a schedule on a transient Mongo blip, so a read
     // error propagates instead: the fire fails and is retried like any other error.
+    getConversation: deps.getConversation,
     projectAccess: async (projectId, user) =>
       (await deps.getChatProject(user.id, projectId)) == null ? 'missing' : 'ok',
     resolveFiles: async (fileIds, user) => {
@@ -1107,7 +1120,7 @@ export function createSchedulesService(
       return false;
     }
     const schedule = await methods.getScheduleById(scheduleId);
-    if (schedule == null) {
+    if (schedule == null || schedule.deleting === true) {
       return false;
     }
     // An AUTOMATIC fire must still be wanted. A policy auto-disable (too many failures,
@@ -1116,8 +1129,21 @@ export function createSchedulesService(
     // controller window would otherwise start a billed generation for a schedule that
     // has just been switched off. Run Now is an explicit user action and stays allowed
     // on a disabled schedule, matching fireScheduleNow.
+    let occurrence: Awaited<ReturnType<ScheduleMethods['getScheduleRunProject']>> | undefined;
     if (options?.automatic === true && schedule.enabled === false) {
-      return false;
+      // The last fire disables a one-shot before its loopback dispatch. Only that
+      // persisted occurrence may enter or resume after completion.
+      if (
+        schedule.disabledReason !== 'completed' ||
+        schedule.cadence.frequency !== 'once' ||
+        options.scheduledFor == null
+      ) {
+        return false;
+      }
+      occurrence = await methods.getScheduleRunProject(scheduleId, options.scheduledFor);
+      if (occurrence == null) {
+        return false;
+      }
     }
     // REVISION FENCE at the admission boundary. Existence alone is not enough: an owner
     // edit landing between the claim and this point means the dispatched prompt/agent
@@ -1175,10 +1201,12 @@ export function createSchedulesService(
       //
       // An ABSENT record falls back to the schedule: a pre-scope occurrence, or one
       // whose row is gone, must never be read as evidence to stop a run.
-      const occurrence =
-        options?.scheduledFor != null
-          ? await methods.getScheduleRunProject(scheduleId, options.scheduledFor)
-          : null;
+      if (occurrence === undefined) {
+        occurrence =
+          options?.scheduledFor != null
+            ? await methods.getScheduleRunProject(scheduleId, options.scheduledFor)
+            : null;
+      }
       // `recorded`, not the id: an occurrence that deliberately ran unscoped recorded a
       // null, and validating the schedule's CURRENT value for it would admit a
       // conversation that satisfies no present requirement. Only an unknown record — a
@@ -1205,11 +1233,17 @@ export function createSchedulesService(
     options?: { expectedConfigRevision?: number; automatic?: boolean },
   ): Promise<ScheduleResumeClaimResult> {
     const schedule = await methods.getScheduleById(scheduleId);
-    if (schedule == null) {
+    if (schedule == null || schedule.deleting === true) {
       return { conflict: 'inactive' };
     }
     if (options?.automatic !== false && schedule.enabled === false) {
-      return { conflict: 'inactive' };
+      if (
+        schedule.disabledReason !== 'completed' ||
+        schedule.cadence.frequency !== 'once' ||
+        (await methods.getScheduleRunProject(scheduleId, scheduledFor)) == null
+      ) {
+        return { conflict: 'inactive' };
+      }
     }
     if (
       options?.expectedConfigRevision != null &&
@@ -1421,8 +1455,12 @@ export function createSchedulesService(
   async function deleteScheduleForOwner(
     scheduleId: string,
     userId: string,
+    scope?: ScheduleAccessScope,
   ): Promise<ScheduleDeleteResult> {
-    const schedule = await methods.markScheduleDeleting(scheduleId, userId);
+    const schedule =
+      scope == null
+        ? await methods.markScheduleDeleting(scheduleId, userId)
+        : await methods.markScheduleDeleting(scheduleId, userId, scope);
     if (schedule == null) {
       return 'not_found';
     }

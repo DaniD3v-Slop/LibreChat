@@ -1327,6 +1327,40 @@ describe('createToolExecuteHandler', () => {
   });
 
   describe('programmatic tool config', () => {
+    it.each([Constants.PROGRAMMATIC_TOOL_CALLING, Constants.BASH_PROGRAMMATIC_TOOL_CALLING])(
+      'keeps native schedule approval outside nested %s execution',
+      async (ptcName) => {
+        const capturedConfigs: Record<string, unknown>[] = [];
+        const ptcTool = createMockTool(ptcName, capturedConfigs);
+        const toolRegistry = new Map([
+          ['create_schedule', { name: 'create_schedule', allowed_callers: ['code_execution'] }],
+          ['read_file', { name: 'read_file', allowed_callers: ['code_execution'] }],
+        ]);
+        const readTool = createMockTool('read_file', []);
+        const loadTools: ToolExecuteOptions['loadTools'] = jest.fn(async () => ({
+          loadedTools: [ptcTool] as never[],
+          configurable: {
+            toolRegistry,
+            ptcToolMap: new Map([
+              ['create_schedule', createMockTool('create_schedule', [])],
+              ['read_file', readTool],
+            ]),
+          },
+        }));
+        await invokeHandler(createToolExecuteHandler({ loadTools }), [
+          {
+            id: 'nested-schedule-call',
+            name: ptcName,
+            args: { code: 'create_schedule({})' },
+          },
+        ]);
+        expect(capturedConfigs[0].toolDefs).toEqual([
+          { name: 'read_file', allowed_callers: ['code_execution'] },
+        ]);
+        expect(capturedConfigs[0].toolMap).toEqual(new Map([['read_file', readTool]]));
+      },
+    );
+
     it('injects tool definitions for the legacy PTC tool name', async () => {
       const capturedConfigs: Record<string, unknown>[] = [];
       const legacyPtcTool = createMockTool(Constants.PROGRAMMATIC_TOOL_CALLING, capturedConfigs);

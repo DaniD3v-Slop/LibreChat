@@ -1,10 +1,12 @@
 import { Cron } from 'croner';
 import {
   cadenceToCron,
+  isOnceCadence,
+  isValidOnceAt,
   cadenceIntervalMinutes,
   isValidCronExpression,
 } from 'librechat-data-provider';
-import type { TScheduleCadence } from 'librechat-data-provider';
+import type { ScheduleDisabledReason, TScheduleCadence } from 'librechat-data-provider';
 
 export const SCHEDULE_JITTER_WINDOW_MS = 120_000;
 
@@ -13,7 +15,15 @@ export const SCHEDULE_JITTER_WINDOW_MS = 120_000;
  * the dialog validates against the exact rules this engine enforces. Re-exported
  * here to keep the engine's imports pointed at one schedules module.
  */
-export { cadenceToCron, cadenceIntervalMinutes, isValidCronExpression };
+export { cadenceToCron, cadenceIntervalMinutes, isValidCronExpression, isValidOnceAt };
+
+/**
+ * Why a schedule with no computable next occurrence stops. For a recurring cadence
+ * that means it is unreadable; a one-time cadence simply ran out of time.
+ */
+export function exhaustedReason(cadence: TScheduleCadence): ScheduleDisabledReason {
+  return isOnceCadence(cadence) ? 'expired' : 'invalid_schedule';
+}
 
 export function isValidTimezone(timezone: string): boolean {
   try {
@@ -50,7 +60,8 @@ export interface ComputeNextRunParams {
 }
 
 /**
- * Next fire instant strictly after `after` (default now), jitter applied.
+ * Next fire instant strictly after `after` (default now). Recurring schedules
+ * receive jitter; one-time schedules keep the exact requested instant.
  * DST semantics are croner's behavior (locked by cadence.spec.ts): a
  * spring-forward gap occurrence fires shifted to the first valid instant
  * (02:30 → 03:30); fall-back ambiguity fires the first occurrence only.
@@ -67,7 +78,10 @@ export function computeNextRunAt(params: ComputeNextRunParams): Date | null {
       paused: true,
     });
     const base = params.after ?? new Date();
-    const jitter = params.disableJitter === true ? 0 : scheduleJitterMs(params.scheduleId);
+    const jitter =
+      params.disableJitter === true || isOnceCadence(params.cadence)
+        ? 0
+        : scheduleJitterMs(params.scheduleId);
     // The jittered instant is `cronOccurrence + jitter`. To return the first one
     // strictly after `base`, find the first cron occurrence after `base - jitter`
     // (occurrence O > base - jitter ⇒ O + jitter > base). Querying from `base`

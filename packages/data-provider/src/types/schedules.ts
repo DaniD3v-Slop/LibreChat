@@ -1,17 +1,19 @@
 import { z } from 'zod';
+import { zodToJsonSchema } from 'zod-to-json-schema';
+import type { Schema } from './tools';
 
 /** Cadences the dialog builds from structured pickers (hour, minute, weekday). */
 export const scheduleStructuredFrequencies = ['hourly', 'daily', 'weekdays', 'weekly'] as const;
 export type ScheduleStructuredFrequency = (typeof scheduleStructuredFrequencies)[number];
 
-export const scheduleFrequencies = [...scheduleStructuredFrequencies, 'cron'] as const;
+export const scheduleFrequencies = [...scheduleStructuredFrequencies, 'cron', 'once'] as const;
 export type ScheduleFrequency = (typeof scheduleFrequencies)[number];
 
 /** Bounds a stored expression. Generous for five fields, because each one can hold a
  *  list: an every-minute-of-the-hour cadence spelled out runs past two hundred chars. */
 export const SCHEDULE_CRON_MAX_LENGTH = 256;
 
-export const scheduleTargets = ['new'] as const;
+export const scheduleTargets = ['new', 'continue', 'steer'] as const;
 export type ScheduleTarget = (typeof scheduleTargets)[number];
 
 export type ScheduleDisabledReason =
@@ -24,7 +26,11 @@ export type ScheduleDisabledReason =
   | 'permission_revoked'
   | 'insufficient_balance'
   | 'project_deleted'
-  | 'project_required';
+  | 'project_required'
+  /** A one-time schedule dispatched its only occurrence. */
+  | 'completed'
+  /** A one-time schedule's instant passed without it firing (engine down, never armed). */
+  | 'expired';
 
 export type ScheduleRunStatus =
   | 'started'
@@ -33,6 +39,7 @@ export type ScheduleRunStatus =
   | 'error'
   | 'interrupted'
   | 'skipped_overlap'
+  | 'skipped_inactive'
   | 'skipped_balance';
 
 export const structuredCadenceSchema = z.object({
@@ -60,22 +67,47 @@ export const cronCadenceSchema = z.object({
 });
 export type TCronCadence = z.infer<typeof cronCadenceSchema>;
 
+/** Minute precision, matching the five-field cron cadences. */
+export const SCHEDULE_ONCE_AT_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/;
+
+/**
+ * A single occurrence at a wall-clock time in the schedule's own timezone, so the
+ * instant the user named survives a DST change between creation and firing. `at`
+ * carries no offset on purpose: the `timezone` field is the one source of truth.
+ * Calendar validity (no February 30) and "not in the past" are checked server-side.
+ */
+export const onceCadenceSchema = z.object({
+  frequency: z.literal('once'),
+  at: z.string().regex(SCHEDULE_ONCE_AT_PATTERN, 'Expected YYYY-MM-DDTHH:mm'),
+});
+export type TOnceCadence = z.infer<typeof onceCadenceSchema>;
+
 export const scheduleCadenceSchema = z.discriminatedUnion('frequency', [
   structuredCadenceSchema,
   cronCadenceSchema,
+  onceCadenceSchema,
 ]);
 export type TScheduleCadence = z.infer<typeof scheduleCadenceSchema>;
 
 export const isCronCadence = (cadence: TScheduleCadence): cadence is TCronCadence =>
   cadence.frequency === 'cron';
 
+export const isOnceCadence = (cadence: TScheduleCadence): cadence is TOnceCadence =>
+  cadence.frequency === 'once';
+
+export const isStructuredCadence = (cadence: TScheduleCadence): cadence is TStructuredCadence =>
+  !isCronCadence(cadence) && !isOnceCadence(cadence);
+
 export const createSchedulePayloadSchema = z.object({
   name: z.string().trim().min(1).max(256),
+  description: z.string().trim().max(2000).optional(),
   prompt: z.string().trim().min(1).max(32000),
   agent_id: z.string().trim().min(1),
   cadence: scheduleCadenceSchema,
   timezone: z.string().min(1),
   target: z.enum(scheduleTargets).default('new'),
+  /** Existing conversation selected by the trusted host for continue/steer. */
+  conversationId: z.string().trim().min(1).optional(),
   file_ids: z
     .array(z.string())
     .max(10)
@@ -100,6 +132,123 @@ export const createSchedulePayloadSchema = z.object({
 });
 export type TCreateSchedule = z.infer<typeof createSchedulePayloadSchema>;
 
+const scheduleToolTimezoneSchema = createSchedulePayloadSchema.shape.timezone
+  .optional()
+  .describe('Optional IANA timezone override; defaults to the current chat timezone.');
+
+const scheduleToolCadenceSchema = z.discriminatedUnion('frequency', [
+  onceCadenceSchema
+    .extend({
+      at: onceCadenceSchema.shape.at.describe('Local YYYY-MM-DDTHH:mm in the selected timezone.'),
+      timezone: scheduleToolTimezoneSchema,
+    })
+    .strict(),
+  cronCadenceSchema.extend({ timezone: scheduleToolTimezoneSchema }).strict(),
+  structuredCadenceSchema
+    .omit({ hour: true, daysOfWeek: true })
+    .extend({ frequency: z.literal('hourly'), timezone: scheduleToolTimezoneSchema })
+    .strict(),
+  structuredCadenceSchema
+    .omit({ daysOfWeek: true })
+    .extend({ frequency: z.enum(['daily', 'weekdays']), timezone: scheduleToolTimezoneSchema })
+    .strict(),
+  structuredCadenceSchema
+    .extend({
+      frequency: z.literal('weekly'),
+      daysOfWeek: structuredCadenceSchema.shape.daysOfWeek.unwrap(),
+      timezone: scheduleToolTimezoneSchema,
+    })
+    .strict(),
+]);
+
+/** Model input excludes the principal and destination identifiers bound by the host. */
+export const createScheduleToolSchema = z
+  .object({
+    name: createSchedulePayloadSchema.shape.name,
+    description: createSchedulePayloadSchema.shape.description.describe(
+      'Optional schedule metadata; not part of the delivered message.',
+    ),
+    prompt: z
+      .object({
+        text: createSchedulePayloadSchema.shape.prompt.describe(
+          'Instruction delivered to this same agent when the schedule fires. Example: "Tell the user it is time to go for their run."',
+        ),
+        file_ids: createSchedulePayloadSchema.shape.file_ids,
+      })
+      .strict(),
+    cadence: scheduleToolCadenceSchema,
+    mode: z
+      .enum(['fire', 'continue', 'steer'])
+      .describe('Start a new chat, continue this chat, or steer its active generation.'),
+  })
+  .strict();
+export type TCreateScheduleToolInput = z.infer<typeof createScheduleToolSchema>;
+
+export const listSchedulesToolSchema = z.object({}).strict();
+export type TListSchedulesToolInput = z.infer<typeof listSchedulesToolSchema>;
+
+export const getScheduleToolSchema = z.object({ id: z.string().trim().min(1) }).strict();
+export type TGetScheduleToolInput = z.infer<typeof getScheduleToolSchema>;
+
+export const deleteScheduleToolSchema = getScheduleToolSchema;
+export type TDeleteScheduleToolInput = z.infer<typeof deleteScheduleToolSchema>;
+
+export const updateScheduleToolSchema = createScheduleToolSchema
+  .partial()
+  .extend({ id: getScheduleToolSchema.shape.id, enabled: z.boolean().optional() })
+  .strict()
+  .refine(
+    (input) => Object.entries(input).some(([key, value]) => key !== 'id' && value !== undefined),
+    {
+      message: 'At least one schedule field must change',
+    },
+  );
+export type TUpdateScheduleToolInput = z.infer<typeof updateScheduleToolSchema>;
+
+function toToolJsonSchema(schema: z.ZodType<unknown>): Schema {
+  return zodToJsonSchema(schema, { target: 'openApi3', $refStrategy: 'none' }) as Schema;
+}
+
+export const createScheduleToolJsonSchema: Schema = toToolJsonSchema(createScheduleToolSchema);
+export const listSchedulesToolJsonSchema: Schema = toToolJsonSchema(listSchedulesToolSchema);
+export const getScheduleToolJsonSchema: Schema = toToolJsonSchema(getScheduleToolSchema);
+export const deleteScheduleToolJsonSchema: Schema = getScheduleToolJsonSchema;
+
+/** The non-empty patch refinement has no JSON-schema representation in Zod. */
+export const updateScheduleToolJsonSchema: Schema = {
+  ...toToolJsonSchema(updateScheduleToolSchema),
+  minProperties: 2,
+};
+
+function normalizeScheduleToolCadence(
+  cadence: TCreateScheduleToolInput['cadence'],
+  defaultTimezone: string,
+): Pick<TCreateSchedule, 'cadence' | 'timezone'> {
+  const { timezone = defaultTimezone, ...stored } = cadence;
+  return {
+    cadence: stored.frequency === 'hourly' ? { ...stored, hour: 0 } : stored,
+    timezone,
+  };
+}
+
+/** Translate validated tool input; the shared create handler owns write validation. */
+export function normalizeCreateScheduleToolInput(
+  input: TCreateScheduleToolInput,
+  defaultTimezone: string,
+): Pick<
+  TCreateSchedule,
+  'name' | 'description' | 'prompt' | 'file_ids' | 'cadence' | 'timezone' | 'target'
+> {
+  return {
+    name: input.name,
+    ...(input.description !== undefined && { description: input.description }),
+    prompt: input.prompt.text,
+    file_ids: input.prompt.file_ids,
+    target: input.mode === 'fire' ? 'new' : input.mode,
+    ...normalizeScheduleToolCadence(input.cadence, defaultTimezone),
+  };
+}
+
 /** Idempotency is a property of the CREATE attempt, not of the schedule's config. */
 export const updateSchedulePayloadSchema = createSchedulePayloadSchema
   .omit({ clientRequestId: true })
@@ -116,6 +265,31 @@ export const updateSchedulePayloadSchema = createSchedulePayloadSchema
   });
 export type TUpdateSchedule = z.infer<typeof updateSchedulePayloadSchema>;
 
+/** Preserve patch omission; supplied prompt and cadence values replace those fields whole. */
+export function normalizeUpdateScheduleToolInput(
+  input: TUpdateScheduleToolInput,
+  defaultTimezone: string,
+): Omit<TUpdateSchedule, 'expectedConfigRevision'> {
+  const normalized: Omit<TUpdateSchedule, 'expectedConfigRevision'> = {};
+  if (input.name !== undefined) normalized.name = input.name;
+  if (input.description !== undefined) normalized.description = input.description;
+  if (input.enabled !== undefined) normalized.enabled = input.enabled;
+  if (input.mode !== undefined) {
+    normalized.target = input.mode === 'fire' ? 'new' : input.mode;
+  }
+
+  if (input.prompt !== undefined) {
+    normalized.prompt = input.prompt.text;
+    normalized.file_ids = input.prompt.file_ids ?? [];
+  }
+
+  if (input.cadence !== undefined) {
+    Object.assign(normalized, normalizeScheduleToolCadence(input.cadence, defaultTimezone));
+  }
+
+  return normalized;
+}
+
 export type TScheduleLastRun = {
   conversationId?: string;
   status: ScheduleRunStatus;
@@ -128,11 +302,14 @@ export type TSchedule = {
   id: string;
   user: string;
   name: string;
+  description?: string;
   prompt: string;
   agent_id: string;
   cadence: TScheduleCadence;
   timezone: string;
   target: ScheduleTarget;
+  conversationId?: string;
+  originConversationId?: string;
   file_ids?: string[];
   chatProjectId?: string | null;
   enabled: boolean;

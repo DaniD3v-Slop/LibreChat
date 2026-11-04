@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { logger } from '@librechat/data-schemas';
+import { Constants, isOnceCadence } from 'librechat-data-provider';
 import type { ScheduleEngineDeps, ScheduleLimits, FireResult, FireableSchedule } from './types';
 import type { AgentTriggerEnvelope } from '../agents/triggers/envelope';
 import type { JsonValue } from '../agents/json';
@@ -54,6 +55,7 @@ function buildScheduleTriggerEnvelope(
   conversationId: string,
   manual: boolean,
   chatProjectId?: string,
+  generationCreatedAt?: number,
 ): AgentTriggerEnvelope {
   const occurrenceId = buildFireClientRequestId(schedule.id, scheduledFor);
   const triggerFiles: JsonValue[] = files.map((file) => {
@@ -66,8 +68,7 @@ function buildScheduleTriggerEnvelope(
     if (file.source != null) value.source = file.source;
     return value;
   });
-  return createAgentTriggerEnvelope({
-    mode: 'fire',
+  const base = {
     requestId: randomUUID(),
     deliveryId: occurrenceId,
     receivedAt: Date.now(),
@@ -76,7 +77,6 @@ function buildScheduleTriggerEnvelope(
       ...(user.role != null && { role: user.role }),
       ...(user.tenantId != null && { tenantId: user.tenantId }),
     },
-    target: { agentId: schedule.agent_id },
     event: {
       id: occurrenceId,
       type: 'schedule.occurrence',
@@ -96,6 +96,32 @@ function buildScheduleTriggerEnvelope(
         }),
       },
     },
+  };
+  if (schedule.target === 'continue') {
+    return createAgentTriggerEnvelope({
+      ...base,
+      mode: 'continue',
+      target: {
+        agentId: schedule.agent_id,
+        conversationId,
+        parentMessageId: String(Constants.NO_PARENT),
+      },
+    });
+  }
+  if (schedule.target === 'steer') {
+    if (generationCreatedAt == null) {
+      throw new TypeError('A scheduled steer requires an active generation');
+    }
+    return createAgentTriggerEnvelope({
+      ...base,
+      mode: 'steer',
+      target: { agentId: schedule.agent_id, conversationId, generationCreatedAt },
+    });
+  }
+  return createAgentTriggerEnvelope({
+    ...base,
+    mode: 'fire',
+    target: { agentId: schedule.agent_id },
   });
 }
 
@@ -146,6 +172,9 @@ export async function fireSchedule(
     scheduleId: schedule.id,
     after: new Date(Math.max(now.getTime(), scheduledFor.getTime())),
   });
+  // A one-time cadence has no occurrence after the one being fired, which for every
+  // other cadence would mean it cannot be read.
+  const isFinalOccurrence = nextRunAt == null && isOnceCadence(schedule.cadence);
   // Every worker-side schedule write is fenced on the claim token so a stale
   // worker (lease expired + re-claimed, or the schedule edited/re-enabled/deleted
   // — all of which rotate the token) cannot clobber the newer authoritative state.
@@ -209,6 +238,14 @@ export async function fireSchedule(
     );
     if (!advanced) {
       await releaseSupersededLease();
+    } else if (isFinalOccurrence) {
+      // Consumed, fired or skipped: a one-time schedule has nothing left to arm. Guarded
+      // on `enabled` so a specific reason written by the skip path (a revoked
+      // permission, a deleted agent) is not overwritten by this generic one. The
+      // dispatched run is still admitted: see `isScheduleLive`.
+      await methods.disableSchedule(schedule.id, 'completed', claimToken, undefined, {
+        enabled: true,
+      });
     }
     return advanced;
   };
@@ -233,7 +270,7 @@ export async function fireSchedule(
     return { fired: false, skipped: 'superseded' as const };
   };
 
-  if (nextRunAt == null) {
+  if (nextRunAt == null && !isFinalOccurrence) {
     await methods.disableSchedule(schedule.id, 'invalid_schedule', claimToken);
     await advance();
     return { fired: false, error: 'No next occurrence computable' };
@@ -320,10 +357,39 @@ export async function fireSchedule(
       return { fired: false, skipped: reason };
     }
 
+    const existingConversation = schedule.target === 'continue' || schedule.target === 'steer';
+    const origin =
+      existingConversation && schedule.conversationId != null
+        ? await deps.getConversation?.(user.id, schedule.conversationId)
+        : undefined;
+    if (
+      existingConversation &&
+      (origin == null ||
+        origin.agent_id !== schedule.agent_id ||
+        (origin.tenantId ?? undefined) !== user.tenantId)
+    ) {
+      await methods.disableSchedule(schedule.id, 'permission_revoked', claimToken);
+      await advance();
+      return { fired: false, skipped: 'permission_revoked' as const };
+    }
+    // An existing conversation keeps its own project. A changed operator pin must
+    // refuse the delivery rather than silently move a user's conversation.
+    if (
+      existingConversation &&
+      ownerLimits.projectId != null &&
+      ownerLimits.projectId !== (origin?.chatProjectId ?? undefined)
+    ) {
+      await methods.disableSchedule(schedule.id, 'project_required', claimToken);
+      await advance();
+      return { fired: false, skipped: 'project_required' as const };
+    }
+
     // Destination project, re-resolved under the OWNER's current policy: an operator
     // pin outranks the stored id, so tightening the config redirects (or stops) an
     // existing schedule instead of grandfathering where its runs land.
-    const chatProjectId = resolveScheduleProjectId(ownerLimits, schedule.chatProjectId);
+    const chatProjectId = existingConversation
+      ? (origin?.chatProjectId ?? undefined)
+      : resolveScheduleProjectId(ownerLimits, schedule.chatProjectId);
     if (ownerLimits.requireProject && chatProjectId == null) {
       // The requirement was raised after this schedule was created. Disable rather
       // than filing runs loose: the owner chose no project under the old policy, and
@@ -354,6 +420,30 @@ export async function fireSchedule(
         .catch((err: unknown) =>
           logger.warn(`[schedules] could not converge stored project for ${schedule.id}`, err),
         );
+    }
+
+    const steerJob =
+      schedule.target === 'steer' && schedule.conversationId != null
+        ? await deps.getJobStatus(schedule.conversationId)
+        : undefined;
+    if (
+      schedule.target === 'steer' &&
+      (steerJob?.status !== 'running' || steerJob.createdAt == null)
+    ) {
+      if (
+        claimToken != null &&
+        !(await methods.revalidateClaim(schedule.id, claimToken, !options?.manual))
+      ) {
+        return stepAsideSuperseded();
+      }
+      await methods.recordSkippedRun({
+        ...baseRun,
+        conversationId: schedule.conversationId,
+        status: 'skipped_inactive',
+        ...claimedRevision,
+      });
+      await advance();
+      return { fired: false, skipped: 'inactive' as const };
     }
 
     if (await deps.isOutOfBalance(user)) {
@@ -481,7 +571,7 @@ export async function fireSchedule(
     // reserveStartedRun is the atomic overlap guard: the single-active partial index
     // rejects a second `started` run for the schedule, so a concurrent occurrence
     // surfaces as 'overlap' with no read-then-insert race.
-    const conversationId = randomUUID();
+    const conversationId = existingConversation ? schedule.conversationId! : randomUUID();
     // Build the durable trigger envelope NOW so the deterministic deliveryKey can be
     // stored on the reservation below — before enqueue. That way schedule reconciliation
     // can read the delivery state (live vs dead) even when the enqueue commits ambiguously,
@@ -498,6 +588,7 @@ export async function fireSchedule(
         conversationId,
         options?.manual === true,
         chatProjectId,
+        steerJob?.createdAt,
       );
     } catch (envelopeError) {
       logger.error(`[schedules] trigger envelope build failed for ${schedule.id}:`, envelopeError);

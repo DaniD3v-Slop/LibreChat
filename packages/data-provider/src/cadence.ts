@@ -1,6 +1,6 @@
 import { Cron } from 'croner';
 import type { TScheduleCadence } from './types/schedules';
-import { isCronCadence, SCHEDULE_CRON_MAX_LENGTH } from './types/schedules';
+import { isCronCadence, isOnceCadence, SCHEDULE_CRON_MAX_LENGTH } from './types/schedules';
 
 /** Mirrors the server default when a weekly cadence omits `daysOfWeek`. */
 const WEEKLY_DEFAULT_DAY = 1;
@@ -51,6 +51,11 @@ export function cadenceToCron(cadence: TScheduleCadence): string {
   if (cadence.frequency === 'cron') {
     return cadence.expression;
   }
+  // croner reads an offset-less ISO date as local time in its `timezone` option and
+  // fires it exactly once, so a one-time cadence needs no second scheduling model.
+  if (cadence.frequency === 'once') {
+    return `${cadence.at}:00`;
+  }
   const { frequency, hour, minute } = cadence;
   if (frequency === 'hourly') {
     return `${minute} * * * *`;
@@ -88,6 +93,28 @@ export function isValidCronExpression(expression: string, timezone?: string): bo
   } catch {
     return false;
   }
+}
+
+/**
+ * Whether a one-time `at` names a real calendar minute. croner rolls `02-30` over
+ * into March instead of refusing it, which would fire on a day the user never named.
+ * "Still in the future" is deliberately not checked here: it depends on the clock,
+ * and an idempotent retry of a create must not fail because time moved on.
+ */
+export function isValidOnceAt(at: string): boolean {
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(at);
+  if (match == null) {
+    return false;
+  }
+  const [year, month, day, hour, minute] = match.slice(1).map(Number);
+  const probe = new Date(Date.UTC(year, month - 1, day, hour, minute));
+  return (
+    probe.getUTCFullYear() === year &&
+    probe.getUTCMonth() === month - 1 &&
+    probe.getUTCDate() === day &&
+    hour < 24 &&
+    minute < 60
+  );
 }
 
 /**
@@ -321,6 +348,10 @@ function cronIntervalMinutes(expression: string, timezone?: string): number {
  * formulas already carry the worst-case allowance.
  */
 export function cadenceIntervalMinutes(cadence: TScheduleCadence, timezone?: string): number {
+  // A single occurrence has no gap to compress, so no floor can reject it.
+  if (isOnceCadence(cadence)) {
+    return Infinity;
+  }
   if (isCronCadence(cadence)) {
     return cronIntervalMinutes(cadence.expression, timezone);
   }

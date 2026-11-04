@@ -16,12 +16,11 @@ export type BuiltinId =
   | `${AgentCapabilities.memory}`
   | `${AgentCapabilities.context}`
   /**
-   * Native tool, not a capability: PRESENTED with the builtins (it ships with
-   * the app and pauses the run, like a first-class feature), but selection and
-   * toggling ride `agent.tools` exactly like a plugin — see the special cases
-   * in `selectors.ts` / `mutations.ts`.
+   * Native tools presented with builtins; selection and toggling are stored in
+   * `agent.tools` rather than separate boolean capability fields.
    */
-  | 'ask_user_question';
+  | 'ask_user_question'
+  | `${AgentCapabilities.schedule_chat}`;
 
 export type AgentItemStatus = 'needs_setup';
 

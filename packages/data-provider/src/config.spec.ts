@@ -2,6 +2,8 @@ import type { TEndpointsConfig } from './types';
 import {
   allowedAddressesSchema,
   agentsEndpointSchema,
+  AgentCapabilities,
+  defaultAgentCapabilities,
   DEFAULT_RETAINED_ANSWER_TOKENS,
   DEFAULT_MAX_RETAINED_TOOL_COUNT_CHARS,
   bedrockModels,
@@ -26,6 +28,15 @@ const endpointsConfig: TEndpointsConfig = {
   'Some Endpoint': { type: EModelEndpoint.custom, userProvide: false, order: 9999 },
   Gemini: { type: EModelEndpoint.custom, userProvide: false, order: 9999 },
 };
+
+describe('schedule_chat capability', () => {
+  it('requires explicit opt-in through the capabilities list', () => {
+    expect(defaultAgentCapabilities).not.toContain(AgentCapabilities.schedule_chat);
+    expect(agentsEndpointSchema.parse({ capabilities: ['schedule_chat'] }).capabilities).toEqual([
+      AgentCapabilities.schedule_chat,
+    ]);
+  });
+});
 
 describe('authenticated 2FA management rate limits', () => {
   it('accepts an account budget and defaults an empty configuration to seven requests', () => {

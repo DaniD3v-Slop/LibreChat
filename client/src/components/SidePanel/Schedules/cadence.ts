@@ -1,4 +1,4 @@
-import { isCronCadence } from 'librechat-data-provider';
+import { isCronCadence, isOnceCadence, isValidOnceAt } from 'librechat-data-provider';
 import type { TScheduleCadence } from 'librechat-data-provider';
 import type { WeekStartDay } from '~/utils/clock';
 import type { LocalizeFunction } from '~/common';
@@ -50,6 +50,21 @@ export const describeCadence = (
     // say things no sentence template covers, and a wrong summary of the cadence a
     // user typed themselves is worse than the expression they already understand.
     return localize('com_ui_schedule_runs_cron', { expression: cadence.expression });
+  }
+  if (isOnceCadence(cadence)) {
+    // `at` is a wall-clock value in the schedule zone, not a browser-local instant.
+    const datetime = isValidOnceAt(cadence.at)
+      ? new Intl.DateTimeFormat(locale, {
+          year: 'numeric',
+          month: 'short',
+          day: 'numeric',
+          hour: 'numeric',
+          minute: '2-digit',
+          hour12,
+          timeZone: 'UTC',
+        }).format(new Date(`${cadence.at}Z`))
+      : cadence.at;
+    return localize('com_ui_schedule_runs_once', { datetime });
   }
   const { frequency, hour, minute, daysOfWeek } = cadence;
   if (frequency === 'hourly') {

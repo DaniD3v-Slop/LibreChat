@@ -41,6 +41,8 @@ const {
   isFileAuthoringToolDefinition,
   normalizeActionToolName,
   ASK_USER_QUESTION_TOOL_NAME,
+  SCHEDULE_CHAT_TOOL_NAME,
+  isScheduleToolName,
   splitMCPToolKey,
   buildServerNameAliases,
   findShadowedServerNames,
@@ -881,6 +883,9 @@ async function loadToolDefinitionsWrapper({
     if (tool === Tools.memory) {
       return checkCapability(AgentCapabilities.memory);
     }
+    if (tool === SCHEDULE_CHAT_TOOL_NAME || isScheduleToolName(tool)) {
+      return checkCapability(AgentCapabilities.schedule_chat);
+    }
     if (tool === ASK_USER_QUESTION_TOOL_NAME) {
       return checkCapability(AgentCapabilities.ask_user_question);
     }
@@ -1695,6 +1700,8 @@ async function loadAgentTools({
       return includesWebSearch;
     } else if (tool === Tools.memory) {
       return checkCapability(AgentCapabilities.memory);
+    } else if (tool === SCHEDULE_CHAT_TOOL_NAME || isScheduleToolName(tool)) {
+      return checkCapability(AgentCapabilities.schedule_chat);
     } else if (tool === ASK_USER_QUESTION_TOOL_NAME) {
       return checkCapability(AgentCapabilities.ask_user_question);
     } else if (isActionTool(tool)) {

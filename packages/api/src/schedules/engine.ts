@@ -4,7 +4,7 @@ import type { ScheduleEngineDeps, JobState } from './types';
 import { hasAbortInFlight, hasResumeHandoffInFlight, retainedOutcome } from './types';
 import { isShutdownInProgress, registerShutdownTask } from '~/app/shutdown';
 import { fireSchedule, BALANCE_SKIP_DISABLE_THRESHOLD } from './fire';
-import { computeNextRunAt } from './cadence';
+import { computeNextRunAt, exhaustedReason } from './cadence';
 
 const TICK_MS = 30_000;
 const TICK_JITTER_MS = 2_000;
@@ -86,7 +86,13 @@ export function startScheduleEngine(deps: ScheduleEngineDeps): ScheduleEngine {
             // All transitions go through recordRunOutcome so the schedule's lastRun
             // (and the card's status chip) tracks the run, including the pause.
             const finalize = (
-              status: 'success' | 'interrupted' | 'error' | 'requires_action' | 'skipped_balance',
+              status:
+                | 'success'
+                | 'interrupted'
+                | 'error'
+                | 'requires_action'
+                | 'skipped_balance'
+                | 'skipped_inactive',
               error?: string,
               opts?: { omitConversationId?: boolean },
             ) =>
@@ -242,6 +248,21 @@ export function startScheduleEngine(deps: ScheduleEngineDeps): ScheduleEngine {
                 // Admission is still live; the delivery will fire or dead-letter later.
                 continue;
               }
+              const result = delivery?.result;
+              if (
+                deliveryStatus === 'succeeded' &&
+                result != null &&
+                typeof result === 'object' &&
+                'mode' in result &&
+                result.mode === 'steer' &&
+                'status' in result &&
+                (result.status === 'queued' || result.status === 'skipped')
+              ) {
+                // Steering owns its durable acceptance, never the target generation.
+                // Settle without clearing or waiting for that generation's job.
+                await finalize(result.status === 'queued' ? 'success' : 'skipped_inactive');
+                continue;
+              }
               if (deliveryStatus === 'dead') {
                 // Definitively failed before a generation ever existed. Record the error
                 // PROMPTLY from the durable lastError and release capacity through the
@@ -307,7 +328,8 @@ export function startScheduleEngine(deps: ScheduleEngineDeps): ScheduleEngine {
                 | 'error'
                 | 'interrupted'
                 | 'skipped_balance'
-                | 'skipped_overlap',
+                | 'skipped_overlap'
+                | 'skipped_inactive',
               conversationId: run.conversationId,
               error: run.error,
               mcp: run.mcp,
@@ -390,7 +412,7 @@ export function startScheduleEngine(deps: ScheduleEngineDeps): ScheduleEngine {
             await deps.methods
               .disableSchedule(
                 schedule.id,
-                'invalid_schedule',
+                exhaustedReason(schedule.cadence),
                 schedule.claimToken,
                 schedule.configRevision,
               )
@@ -504,7 +526,11 @@ export function startScheduleEngine(deps: ScheduleEngineDeps): ScheduleEngine {
               // and no disabledReason, permanently unclaimable and invisible. Bail
               // instead: the lease expires and the occurrence is retried.
               const disabled = await deps.methods
-                .disableSchedule(schedule.id, 'invalid_schedule', schedule.claimToken)
+                .disableSchedule(
+                  schedule.id,
+                  exhaustedReason(schedule.cadence),
+                  schedule.claimToken,
+                )
                 .then(() => true)
                 .catch(() => false);
               if (!disabled) {
@@ -549,8 +575,9 @@ export function startScheduleEngine(deps: ScheduleEngineDeps): ScheduleEngine {
               `[schedules] unexpected fire error for ${schedule.id} (will retry):`,
               error,
             );
-            // An UNCOMPUTABLE cadence is the one non-transient case: retrying can never
-            // make progress, and leaving the lease would re-claim the same occurrence
+            // A due one-shot has no next occurrence, but can still retry this one.
+            // An UNCOMPUTABLE recurring cadence is non-transient: retrying can
+            // never make progress, and leaving the lease would re-claim the same occurrence
             // forever. Disable so it stops being due, and only then clear nextRunAt —
             // advancing on a failed disable would leave `enabled: true` with no nextRunAt
             // and no disabledReason (permanently unclaimable and invisible). Everything
@@ -563,7 +590,7 @@ export function startScheduleEngine(deps: ScheduleEngineDeps): ScheduleEngine {
               // reschedule to an already-due occurrence and reclaim the same row.
               after: new Date(dbNow),
             });
-            if (next == null) {
+            if (next == null && schedule.cadence.frequency !== 'once') {
               const disabled = await deps.methods
                 .disableSchedule(schedule.id, 'invalid_schedule', schedule.claimToken)
                 .then(() => true)

@@ -144,6 +144,7 @@ import { deleteSkillWithRetry } from '~/skills/cleanup';
 import { resolveDownloadPath } from '~/storage/path';
 import { parseFrontmatter } from '../skills/import';
 import { cleanCodeToolOutput } from './cleanup';
+import { isScheduleToolName } from './schedule';
 import { primeSkillFiles } from './skillFiles';
 import { instrumentPtcToolMap } from './ptc';
 import { markSandboxReady } from './prewarm';
@@ -7616,6 +7617,7 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
                             toolDef.name !== Constants.BASH_PROGRAMMATIC_TOOL_CALLING &&
                             toolDef.name !== Constants.TOOL_SEARCH &&
                             toolDef.name !== CHECK_BACKGROUND_TASK_NAME &&
+                            !isScheduleToolName(toolDef.name) &&
                             !fileAuthoringToolNames.has(toolDef.name);
                           if (!isInnerTool) {
                             continue;

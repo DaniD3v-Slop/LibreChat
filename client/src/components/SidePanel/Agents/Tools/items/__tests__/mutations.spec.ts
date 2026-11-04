@@ -58,6 +58,24 @@ const action: AgentItem = {
 };
 
 describe('computeToggleAction', () => {
+  test('schedule_chat toggles agent.tools rather than a form capability field', () => {
+    const item: AgentItem = {
+      kind: 'builtin',
+      id: 'schedule_chat',
+      name: 'Schedule chat',
+      description: '',
+      iconKey: 'schedule_chat',
+    };
+    expect(computeToggleAction(item, { selected: false })).toEqual({
+      type: 'tool-add',
+      id: 'schedule_chat',
+    });
+    expect(computeToggleAction(item, { selected: true })).toEqual({
+      type: 'tool-remove',
+      id: 'schedule_chat',
+    });
+  });
+
   test('toggling execute_code on writes the boolean flag', () => {
     expect(computeToggleAction(builtinCode, { selected: false })).toEqual({
       type: 'builtin',

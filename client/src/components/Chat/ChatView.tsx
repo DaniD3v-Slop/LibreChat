@@ -4,7 +4,7 @@ import { useRecoilValue } from 'recoil';
 import { useForm } from 'react-hook-form';
 import { Spinner } from '@librechat/client';
 import { useParams } from 'react-router-dom';
-import { Constants, buildTree } from 'librechat-data-provider';
+import { Constants, buildTree, PermissionTypes, Permissions } from 'librechat-data-provider';
 import type { TChatProject } from 'librechat-data-provider';
 import type { ChatFormValues } from '~/common';
 import {
@@ -16,13 +16,15 @@ import {
   useQueueDrain,
   useQueuedTurnReveal,
   useLocalize,
+  useHasAccess,
 } from '~/hooks';
+import { useGetMessagesByConvoId, useGetStartupConfig, useSchedulesQuery } from '~/data-provider';
 import { ChatContext, AddedChatContext, ChatFormProvider, useFileMapContext } from '~/Providers';
 import { QueuedTurnPortalProvider } from './Steering/QueuedTurnPortal';
+import useRunSync from '~/components/SidePanel/Schedules/useRunSync';
 import ApprovalProvider from './Messages/Content/ApprovalContext';
 import ConversationStarters from './Input/ConversationStarters';
 import { pendingApprovalActionFamily } from './approval/state';
-import { useGetMessagesByConvoId } from '~/data-provider';
 import Footer, { useConfiguredFooter } from './Footer';
 import { AskAnswerHostProvider } from './ask/state';
 import MessagesView from './Messages/MessagesView';
@@ -49,6 +51,27 @@ function ChatView({ index = 0, project }: { index?: number; project?: TChatProje
   const localize = useLocalize();
   const rootSubmission = useRecoilValue(store.submissionByIndex(index));
   const isSubmitting = useRecoilValue(store.isSubmittingFamily(index));
+  const { data: startupConfig } = useGetStartupConfig();
+  const schedulesConfig = startupConfig?.interface?.schedules;
+  const canUseSchedules = useHasAccess({
+    permissionType: PermissionTypes.SCHEDULES,
+    permission: Permissions.USE,
+  });
+  const schedulesEnabled =
+    index === 0 &&
+    canUseSchedules &&
+    schedulesConfig != null &&
+    schedulesConfig !== false &&
+    !(typeof schedulesConfig === 'object' && schedulesConfig.use === false);
+  const { data: schedulesData, dataUpdatedAt: schedulesUpdatedAt } = useSchedulesQuery({
+    enabled: schedulesEnabled,
+  });
+  useRunSync(
+    schedulesEnabled ? schedulesData?.schedules : undefined,
+    schedulesUpdatedAt,
+    conversationId,
+    isSubmitting,
+  );
   const saveDrafts = useRecoilValue(store.saveDrafts);
   const centerFormOnLanding = useRecoilValue(store.centerFormOnLanding);
   const pendingAction = useAtomValue(

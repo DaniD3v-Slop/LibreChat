@@ -1,7 +1,11 @@
 import type { PluginHookSource } from '~/agents/hooks/source';
 import type { ToolApprovalAdmissionAgent } from './admission';
 import type { ToolApprovalHook } from './hooks';
-import { agentRunUsesCheckpointer, canAgentGraphPause } from './admission';
+import {
+  agentRunUsesCheckpointer,
+  canAgentGraphPause,
+  shouldPruneAgentCheckpoint,
+} from './admission';
 
 const askHook: ToolApprovalHook = async () => ({ decision: 'ask' });
 
@@ -159,5 +163,39 @@ describe('agentRunUsesCheckpointer', () => {
         askUserQuestionAdminDisabled: true,
       }),
     ).toBe(false);
+  });
+});
+
+describe('schedule_chat native approval admission', () => {
+  const agents = [{ id: 'agent-1', toolDefinitions: [{ name: 'create_schedule' }] }];
+  test.each([
+    ...agents,
+    { lazySubagentConfigs: [{ tools: ['create_schedule'] }] },
+    { lazySubagentConfigs: [{ tools: ['schedule_chat'] }] },
+  ])('requires approval and checkpointing for reachable schedule writes: %j', (agent) => {
+    for (const policy of [undefined, { enabled: true, mode: 'bypass' as const }]) {
+      expect(canAgentGraphPause({ policy, agents: [agent] })).toBe(true);
+      expect(agentRunUsesCheckpointer({ policy, agents: [agent] })).toBe(true);
+    }
+  });
+
+  test('honors explicit administrator disable and deny', () => {
+    expect(canAgentGraphPause({ policy: { enabled: false }, agents })).toBe(false);
+    expect(agentRunUsesCheckpointer({ policy: { enabled: false }, agents })).toBe(false);
+    expect(
+      canAgentGraphPause({ policy: { enabled: true, deny: ['create_schedule'] }, agents }),
+    ).toBe(false);
+  });
+});
+
+describe('terminal checkpoint cleanup for implicit approval', () => {
+  it('prunes an immutable generation scope without a policy or pending approval', () => {
+    expect(shouldPruneAgentCheckpoint({ checkpointNamespace: 'schedule-generation' })).toBe(true);
+  });
+
+  it('keeps legacy policy and pending-action cleanup without broad legacy thread deletion', () => {
+    expect(shouldPruneAgentCheckpoint(undefined)).toBe(false);
+    expect(shouldPruneAgentCheckpoint({ checkpointNamespace: '' })).toBe(false);
+    expect(shouldPruneAgentCheckpoint(undefined, { enabled: true })).toBe(true);
   });
 });

@@ -119,6 +119,24 @@ afterEach(() => jest.restoreAllMocks());
 const staleAt = () => new Date(Date.now() - 20 * 60_000);
 
 describe('runTick misfire skip-forward', () => {
+  it('expires a one-shot missed beyond the grace window', async () => {
+    const schedule = makeClaimedSchedule({
+      nextRunAt: staleAt(),
+      cadence: { frequency: 'once', at: '2020-01-01T08:00' },
+    });
+    const methods = makeMethods(schedule);
+
+    await tickOnce(makeDeps(methods));
+
+    expect(methods.disableSchedule).toHaveBeenCalledWith('sched-1', 'expired', 'ct-1');
+    expect(methods.advanceSchedule).toHaveBeenCalledWith(
+      'sched-1',
+      null,
+      schedule.nextRunAt,
+      'ct-1',
+    );
+  });
+
   it('advances a stale occurrence to the next future one', async () => {
     const schedule = makeClaimedSchedule({ nextRunAt: staleAt() });
     const methods = makeMethods(schedule);
@@ -179,6 +197,25 @@ describe('runTick misfire skip-forward', () => {
 });
 
 describe('runTick error handling', () => {
+  it('retains a due one-shot for retry when preflight fails', async () => {
+    const schedule = makeClaimedSchedule({
+      cadence: { frequency: 'once', at: new Date(Date.now() - 60_000).toISOString().slice(0, 16) },
+      timezone: 'UTC',
+    });
+    const methods = makeMethods(schedule);
+
+    await tickOnce(
+      makeDeps(methods, {
+        getUserContext: async () => {
+          throw new Error('mongo unavailable');
+        },
+      }),
+    );
+
+    expect(methods.disableSchedule).not.toHaveBeenCalled();
+    expect(methods.advanceSchedule).not.toHaveBeenCalled();
+  });
+
   it('uses readiness admission capacity independently of generation capacity', async () => {
     const schedules = Array.from({ length: 6 }, (_, index) =>
       makeClaimedSchedule({
@@ -321,6 +358,51 @@ describe('reconciliation consults the durable trigger delivery', () => {
     return methods;
   }
 
+  it.each([
+    ['queued', 'success'],
+    ['skipped', 'skipped_inactive'],
+  ])(
+    'settles a succeeded steer delivery with %s status independently of the target generation',
+    async (deliveryResult, expectedStatus) => {
+      const methods = makeMethods(makeClaimedSchedule());
+      (methods.getRunsForReconciliation as jest.Mock).mockResolvedValue([joblessRun(YOUNG())]);
+      const clearReconciledJob = jest.fn();
+
+      await reconcileOnce(
+        makeDeps(methods, {
+          getJobStatus: async () => ({
+            status: 'running',
+            scheduleId: 'other-schedule',
+            scheduledFor: new Date(0).toISOString(),
+          }),
+          getTriggerDelivery: async () => ({
+            status: 'succeeded',
+            result: { mode: 'steer', status: deliveryResult },
+          }),
+          clearReconciledJob,
+        }),
+      );
+
+      expect(methods.recordRunOutcome).toHaveBeenCalledWith(
+        expect.objectContaining({
+          scheduleId: 's1',
+          status: expectedStatus,
+          conversationId: 'conv-1',
+        }),
+      );
+      expect(clearReconciledJob).not.toHaveBeenCalled();
+    },
+  );
+
+  it('does not trust an uncommitted steer acceptance receipt', async () => {
+    const methods = await runReconcile(joblessRun(OLD()), async () => ({
+      status: 'pending',
+      result: { mode: 'steer', status: 'queued' },
+    }));
+
+    expect(methods.recordRunOutcome).not.toHaveBeenCalled();
+  });
+
   it('settles a DEAD delivery as error promptly, before the 30-minute orphan age', async () => {
     const methods = await runReconcile(joblessRun(YOUNG()), async () => ({
       status: 'dead',
@@ -462,6 +544,22 @@ describe('reconciliation is isolated per row', () => {
 });
 
 describe('unarmed recovery sweep', () => {
+  it('expires an unarmed one-shot whose time has passed', async () => {
+    const methods = makeMethods(makeClaimedSchedule());
+    methods.claimDueSchedule.mockResolvedValue(null);
+    const schedule = makeClaimedSchedule({
+      cadence: { frequency: 'once', at: '2020-01-01T08:00' },
+      nextRunAt: undefined,
+      configRevision: 4,
+    });
+    (methods.getUnarmedSchedules as jest.Mock).mockResolvedValue([schedule]);
+
+    await reconcileOnce(makeDeps(methods));
+
+    expect(methods.disableSchedule).toHaveBeenCalledWith('sched-1', 'expired', 'ct-1', 4);
+    expect(methods.armSchedule).not.toHaveBeenCalled();
+  });
+
   it('disables an unarmed schedule whose cadence is uncomputable', async () => {
     const methods = makeMethods(makeClaimedSchedule());
     methods.claimDueSchedule.mockResolvedValue(null);

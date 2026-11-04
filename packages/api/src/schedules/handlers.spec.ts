@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import * as crypto from 'node:crypto';
 import type { ISchedule, IScheduleRun } from '@librechat/data-schemas';
 import type { Response } from 'express';
 import type { SchedulesHandlersDeps } from './handlers';
@@ -147,9 +147,9 @@ const CREATE_BODY = {
   clientRequestId: 'intent-1',
 };
 
-function makeCreateReq(): ServerRequest {
+function makeCreateReq(body: object = CREATE_BODY): ServerRequest {
   return {
-    body: { ...CREATE_BODY },
+    body: { ...body },
     user: { id: 'user-1', tenantId: 't1', role: 'USER' },
   } as unknown as ServerRequest;
 }
@@ -394,7 +394,8 @@ describe('computeCreateDigest cadence shape', () => {
     // for every cadence would change it for schedules already out there: a create that
     // committed before a deploy and lost its response would retry against a digest
     // that no longer matches and be refused as if the key had been reused.
-    const legacy = createHash('sha256')
+    const legacy = crypto
+      .createHash('sha256')
       .update(
         JSON.stringify({
           name: 'Digest',
@@ -1487,4 +1488,412 @@ it('allows repointing a disabled schedule without MCP preflight', async () => {
   expect(captured.status ?? 200).toBe(200);
   expect(preflightMCP).not.toHaveBeenCalled();
   expect(deps.methods.updateScheduleById).toHaveBeenCalled();
+});
+
+describe('one-time schedule writes', () => {
+  const cadence = { frequency: 'once' as const, at: '2020-01-01T08:00' };
+
+  function depsForOnce() {
+    return makeCreateDeps({ isUserDeleting: jest.fn(async () => false) });
+  }
+
+  it('includes the occurrence in the immutable create digest', () => {
+    const payload = { ...CREATE_BODY, target: 'new' as const, enabled: true, cadence };
+    expect(computeCreateDigest(payload)).not.toBe(
+      computeCreateDigest({ ...payload, cadence: { ...cadence, at: '2020-01-02T08:00' } }),
+    );
+  });
+
+  it.each(['createSchedule', 'updateSchedule'] as const)(
+    '%s rejects an impossible calendar date without storing it',
+    async (operation) => {
+      const deps = depsForOnce();
+      jest.mocked(deps.methods.getScheduleById).mockResolvedValue(fullScheduleDoc());
+      const req = makeCreateReq({
+        ...CREATE_BODY,
+        cadence: { ...cadence, at: '2099-02-30T08:00' },
+      });
+      req.params = { id: 'sched-1' };
+      const { res, captured } = makeRes();
+
+      await createSchedulesHandlers(deps)[operation](req, res);
+
+      expect(captured.status).toBe(400);
+      expect(captured.body).toEqual({ error: 'Invalid one-time schedule date' });
+      expect(deps.methods.createScheduleWithSlot).not.toHaveBeenCalled();
+      expect(deps.methods.updateScheduleById).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['create', 'update'] as const)(
+    'rejects a %s just after the requested instant, inside the former jitter window',
+    async (action) => {
+      const uuid = jest
+        .spyOn(crypto, 'randomUUID')
+        .mockReturnValue('00000000-0000-4000-8000-000000000000');
+      jest.useFakeTimers().setSystemTime(new Date('2026-12-24T17:30:01Z'));
+      try {
+        const deps = depsForOnce();
+        const once = { frequency: 'once' as const, at: '2026-12-24T18:30' };
+        const req = makeCreateReq({ ...CREATE_BODY, cadence: once, timezone: 'Europe/Vienna' });
+        const { res, captured } = makeRes();
+        const handlers = createSchedulesHandlers(deps);
+        if (action === 'update') {
+          jest.mocked(deps.methods.getScheduleById).mockResolvedValue(
+            fullScheduleDoc({
+              id: 'sched_00000000-0000-4000-8000-000000000000',
+              cadence: once,
+              timezone: 'Europe/Vienna',
+            }),
+          );
+          req.params = { id: 'sched_00000000-0000-4000-8000-000000000000' };
+          await handlers.updateSchedule(req, res);
+        } else {
+          await handlers.createSchedule(req, res);
+        }
+
+        expect(captured.status).toBe(400);
+        expect(captured.body).toEqual({ error: 'Schedule time is in the past' });
+        expect(deps.methods.createScheduleWithSlot).not.toHaveBeenCalled();
+        expect(deps.methods.updateScheduleById).not.toHaveBeenCalled();
+      } finally {
+        jest.useRealTimers();
+        uuid.mockRestore();
+      }
+    },
+  );
+
+  it('allows a disabled occurrence in the past', async () => {
+    const deps = depsForOnce();
+    const req = makeCreateReq({ ...CREATE_BODY, cadence, enabled: false });
+    const { res, captured } = makeRes();
+
+    await createSchedulesHandlers(deps).createSchedule(req, res);
+
+    expect(captured.status).toBe(201);
+    expect(deps.methods.createScheduleWithSlot).toHaveBeenCalledTimes(1);
+  });
+
+  it('replays a committed occurrence after its time passed', async () => {
+    const deps = depsForOnce();
+    const committed = fullScheduleDoc({ cadence, enabled: false, disabledReason: 'completed' });
+    (deps.methods.getScheduleByClientRequestId as jest.Mock).mockResolvedValue(committed);
+    (deps.methods.getScheduleById as jest.Mock).mockResolvedValue(committed);
+    const req = makeCreateReq({ ...CREATE_BODY, cadence, file_ids: ['file-1'] });
+    const { res, captured } = makeRes();
+
+    await createSchedulesHandlers(deps).createSchedule(req, res);
+
+    expect(captured.status).toBe(201);
+    expect(deps.methods.createScheduleWithSlot).not.toHaveBeenCalled();
+  });
+
+  it('rejects reuse of a legacy one-time create key for another occurrence', async () => {
+    const deps = depsForOnce();
+    const committed = fullScheduleDoc({ cadence });
+    (deps.methods.getScheduleByClientRequestId as jest.Mock).mockResolvedValue(committed);
+    (deps.methods.getScheduleById as jest.Mock).mockResolvedValue(committed);
+    const req = makeCreateReq({
+      ...CREATE_BODY,
+      cadence: { ...cadence, at: '2020-01-02T08:00' },
+      file_ids: ['file-1'],
+    });
+    const { res, captured } = makeRes();
+
+    await createSchedulesHandlers(deps).createSchedule(req, res);
+
+    expect(captured.status).toBe(409);
+  });
+
+  it('rejects re-enabling an elapsed occurrence', async () => {
+    const deps = depsForOnce();
+    (deps.methods.getScheduleById as jest.Mock).mockResolvedValue(
+      fullScheduleDoc({ cadence, enabled: false, disabledReason: 'completed' }),
+    );
+    const req = makeCreateReq({ enabled: true });
+    req.params = { id: 'sched-1' };
+    const { res, captured } = makeRes();
+
+    await createSchedulesHandlers(deps).updateSchedule(req, res);
+
+    expect(captured.status).toBe(400);
+    expect(captured.body).toEqual({ error: 'Schedule time is in the past' });
+    expect(deps.methods.updateScheduleById).not.toHaveBeenCalled();
+  });
+});
+
+describe('existing-conversation schedule destinations', () => {
+  const conversationId = '5bd09171-8c01-4f90-a8d2-ecdbd68bd4fb';
+
+  function setup(conversation: { agent_id?: string; chatProjectId?: string } | null) {
+    const deps = makeCreateDeps({
+      isUserDeleting: async () => false,
+      getConversation: jest.fn(async () =>
+        conversation == null ? null : { ...conversation, tenantId: 't1' },
+      ),
+      canUseProject: jest.fn(async () => true),
+    });
+    (deps.methods.getScheduleById as jest.Mock).mockImplementation(
+      async () => (deps.methods.createScheduleWithSlot as jest.Mock).mock.calls[0]?.[0] ?? null,
+    );
+    return deps;
+  }
+
+  it('refuses a conversation not owned by the requester', async () => {
+    const deps = setup(null);
+    const { res, captured } = makeRes();
+
+    await createSchedulesHandlers(deps).createSchedule(
+      makeCreateReq({ ...CREATE_BODY, target: 'continue', conversationId }),
+      res,
+    );
+
+    expect(captured.status).toBe(400);
+    expect(captured.body).toEqual({ error: 'Conversation not found or not accessible' });
+    expect(deps.methods.createScheduleWithSlot).not.toHaveBeenCalled();
+  });
+
+  it('refuses a conversation belonging to a different agent', async () => {
+    const deps = setup({ agent_id: 'agent-other' });
+    const { res, captured } = makeRes();
+
+    await createSchedulesHandlers(deps).createSchedule(
+      makeCreateReq({ ...CREATE_BODY, target: 'steer', conversationId }),
+      res,
+    );
+
+    expect(captured.status).toBe(400);
+    expect(captured.body).toEqual({ error: 'Conversation does not use the scheduled agent' });
+    expect(deps.methods.createScheduleWithSlot).not.toHaveBeenCalled();
+  });
+
+  it('refuses a supplied project different from the actual conversation project', async () => {
+    const deps = setup({ agent_id: 'agent-1', chatProjectId: 'project-real' });
+    const { res, captured } = makeRes();
+
+    await createSchedulesHandlers(deps).createSchedule(
+      makeCreateReq({ ...CREATE_BODY, target: 'continue', conversationId, chatProjectId: 'other' }),
+      res,
+    );
+
+    expect(captured.status).toBe(400);
+    expect(captured.body).toEqual({
+      error: 'Schedule project must match the conversation project',
+    });
+    expect(deps.methods.createScheduleWithSlot).not.toHaveBeenCalled();
+  });
+
+  it('refuses an operator pin that would misfile an existing conversation', async () => {
+    const deps = setup({ agent_id: 'agent-1', chatProjectId: 'project-real' });
+    const getLimits = deps.getLimits;
+    deps.getLimits = async (user) => ({ ...(await getLimits(user)), projectId: 'project-pinned' });
+    const { res, captured } = makeRes();
+
+    await createSchedulesHandlers(deps).createSchedule(
+      makeCreateReq({ ...CREATE_BODY, target: 'continue', conversationId }),
+      res,
+    );
+
+    expect(captured.status).toBe(400);
+    expect(deps.methods.createScheduleWithSlot).not.toHaveBeenCalled();
+  });
+
+  it('includes the destination conversation in the create intent digest', () => {
+    const payload = {
+      ...CREATE_BODY,
+      target: 'continue' as const,
+      conversationId,
+      enabled: true,
+    };
+    expect(computeCreateDigest(payload)).not.toBe(
+      computeCreateDigest({ ...payload, conversationId: 'another-chat' }),
+    );
+  });
+
+  it('refuses an existing-conversation target without its conversation', async () => {
+    const deps = setup({ agent_id: 'agent-1' });
+    const { res, captured } = makeRes();
+
+    await createSchedulesHandlers(deps).createSchedule(
+      makeCreateReq({ ...CREATE_BODY, target: 'continue' }),
+      res,
+    );
+
+    expect(captured.status).toBe(400);
+    expect(deps.methods.createScheduleWithSlot).not.toHaveBeenCalled();
+  });
+
+  it('refuses a new-chat target carrying an existing conversation', async () => {
+    const deps = setup({ agent_id: 'agent-1' });
+    const { res, captured } = makeRes();
+
+    await createSchedulesHandlers(deps).createSchedule(
+      makeCreateReq({ ...CREATE_BODY, target: 'new', conversationId }),
+      res,
+    );
+
+    expect(captured.status).toBe(400);
+    expect(deps.methods.createScheduleWithSlot).not.toHaveBeenCalled();
+  });
+
+  it('refuses a same-user conversation from a different tenant', async () => {
+    const deps = setup({ agent_id: 'agent-1' });
+    jest.mocked(deps.getConversation).mockResolvedValue({ agent_id: 'agent-1', tenantId: 'other' });
+    const { res, captured } = makeRes();
+
+    await createSchedulesHandlers(deps).createSchedule(
+      makeCreateReq({ ...CREATE_BODY, target: 'continue', conversationId }),
+      res,
+    );
+
+    expect(captured.status).toBe(400);
+    expect(deps.methods.createScheduleWithSlot).not.toHaveBeenCalled();
+  });
+
+  it('allows disabling a schedule whose conversation disappeared', async () => {
+    const deps = setup(null);
+    (deps.methods.getScheduleById as jest.Mock).mockResolvedValue(
+      fullScheduleDoc({ target: 'continue', conversationId }),
+    );
+    const req = makeCreateReq({ enabled: false });
+    req.params = { id: 'sched-1' };
+    const { res } = makeRes();
+
+    await createSchedulesHandlers(deps).updateSchedule(req, res);
+
+    expect(deps.getConversation).not.toHaveBeenCalled();
+    expect(deps.methods.updateScheduleById).toHaveBeenCalled();
+  });
+
+  it('clears the stored conversation when changing to new-chat mode', async () => {
+    const deps = setup(null);
+    (deps.methods.getScheduleById as jest.Mock).mockResolvedValue(
+      fullScheduleDoc({ target: 'continue', conversationId }),
+    );
+    const req = makeCreateReq({ target: 'new' });
+    req.params = { id: 'sched-1' };
+    const { res } = makeRes();
+
+    await createSchedulesHandlers(deps).updateSchedule(req, res);
+
+    expect(deps.methods.updateScheduleById).toHaveBeenCalledWith(
+      'sched-1',
+      'user-1',
+      expect.objectContaining({ target: 'new' }),
+      expect.objectContaining({ conversationId: 1 }),
+      expect.any(Object),
+    );
+  });
+
+  it('rechecks the stored destination when an update omits it', async () => {
+    const deps = setup(null);
+    (deps.methods.getScheduleById as jest.Mock).mockResolvedValue(
+      fullScheduleDoc({ target: 'continue', conversationId }),
+    );
+    const req = makeCreateReq({ prompt: 'Updated prompt' });
+    req.params = { id: 'sched-1' };
+    const { res, captured } = makeRes();
+
+    await createSchedulesHandlers(deps).updateSchedule(req, res);
+
+    expect(captured.status).toBe(400);
+    expect(deps.methods.updateScheduleById).not.toHaveBeenCalled();
+  });
+});
+
+describe('agent-tool scope boundaries', () => {
+  const context = { agentId: 'agent-1', conversationId: 'origin-a', projectId: 'project-a' };
+
+  function setup() {
+    const deps = makeCreateDeps({
+      isUserDeleting: async () => false,
+      canUseProject: async () => true,
+      getConversation: jest.fn(async () => ({
+        user: 'user-1',
+        conversationId: 'origin-a',
+        tenantId: 't1',
+        agent_id: 'agent-1',
+        chatProjectId: 'project-a',
+      })),
+    });
+    jest.mocked(deps.methods.getScheduleById).mockResolvedValue(
+      fullScheduleDoc({
+        chatProjectId: 'project-a',
+        originConversationId: 'original-origin',
+      }),
+    );
+    const request = (body: object = {}) =>
+      Object.assign(makeCreateReq(body), {
+        scheduleToolContext: { ...context },
+        params: { id: 'sched-1' },
+      });
+    return { deps, request };
+  }
+
+  it('reuses a user-owned host conversation snapshot instead of reading it again', async () => {
+    const { deps, request } = setup();
+    const req = Object.assign(request(), {
+      resolvedConversation: {
+        user: 'user-1',
+        conversationId: 'origin-a',
+        tenantId: 't1',
+        agent_id: 'agent-1',
+        chatProjectId: 'project-a',
+      },
+    });
+    const { res, captured } = makeRes();
+
+    await createSchedulesHandlers(deps).getSchedule(req, res);
+
+    expect(captured.body).toEqual(expect.objectContaining({ id: 'sched-1' }));
+    expect(deps.getConversation).not.toHaveBeenCalled();
+  });
+
+  it('refuses a stale current-project context before reading schedules', async () => {
+    const { deps, request } = setup();
+    const req = request();
+    req.scheduleToolContext.projectId = 'stale-project';
+    const { res, captured } = makeRes();
+
+    await createSchedulesHandlers(deps).getSchedule(req, res);
+
+    expect(captured.status).toBe(403);
+    expect(deps.methods.getScheduleById).not.toHaveBeenCalled();
+  });
+
+  it('preserves captured origin on ordinary edits and fences storage by scope', async () => {
+    const { deps, request } = setup();
+    const { res } = makeRes();
+
+    await createSchedulesHandlers(deps).updateSchedule(
+      request({ description: 'Changed reason' }),
+      res,
+    );
+
+    expect(deps.methods.updateScheduleById).toHaveBeenCalledWith(
+      'sched-1',
+      'user-1',
+      expect.objectContaining({ description: 'Changed reason' }),
+      undefined,
+      expect.objectContaining({ scope: { ...context, tenantId: 't1' } }),
+    );
+    expect(jest.mocked(deps.methods.updateScheduleById).mock.calls[0][2]).not.toHaveProperty(
+      'originConversationId',
+    );
+  });
+
+  it('rebinds origin only for an explicit mode change', async () => {
+    const { deps, request } = setup();
+    const { res } = makeRes();
+
+    await createSchedulesHandlers(deps).updateSchedule(request({ target: 'new' }), res);
+
+    expect(deps.methods.updateScheduleById).toHaveBeenCalledWith(
+      'sched-1',
+      'user-1',
+      expect.objectContaining({ originConversationId: 'origin-a' }),
+      undefined,
+      expect.objectContaining({ scope: { ...context, tenantId: 't1' } }),
+    );
+  });
 });

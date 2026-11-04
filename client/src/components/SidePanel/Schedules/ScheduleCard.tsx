@@ -54,6 +54,7 @@ const STATUS_CHIPS: Record<ScheduleRunStatus, { label: TranslationKeys; tone: St
   started: { label: 'com_ui_schedule_run_started', tone: 'neutral' },
   skipped_overlap: { label: 'com_ui_schedule_run_skipped', tone: 'neutral' },
   skipped_balance: { label: 'com_ui_schedule_run_skipped', tone: 'neutral' },
+  skipped_inactive: { label: 'com_ui_schedule_skipped_inactive', tone: 'neutral' },
 };
 
 const DISABLED_REASON_LABELS: Record<ScheduleDisabledReason, TranslationKeys> = {
@@ -63,6 +64,8 @@ const DISABLED_REASON_LABELS: Record<ScheduleDisabledReason, TranslationKeys> = 
   too_many_failures: 'com_ui_schedule_disabled_too_many_failures',
   agent_deleted: 'com_ui_schedule_disabled_agent_deleted',
   invalid_schedule: 'com_ui_schedule_disabled_invalid',
+  completed: 'com_ui_schedule_completed',
+  expired: 'com_ui_schedule_expired',
   permission_revoked: 'com_ui_schedule_disabled_permission_revoked',
   insufficient_balance: 'com_ui_schedule_disabled_insufficient_balance',
   project_deleted: 'com_ui_schedule_disabled_project_deleted',

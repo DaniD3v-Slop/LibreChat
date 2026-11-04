@@ -4,11 +4,18 @@ import {
   createSchedulePayloadSchema,
   updateSchedulePayloadSchema,
   isCronCadence,
+  isOnceCadence,
 } from 'librechat-data-provider';
+import type {
+  ScheduleAccessScope,
+  ScheduleMethods,
+  ISchedule,
+  IScheduleRun,
+} from '@librechat/data-schemas';
 import type { TScheduleCadence, TCreateSchedule, TUpdateSchedule } from 'librechat-data-provider';
-import type { ScheduleMethods, ISchedule, IScheduleRun } from '@librechat/data-schemas';
 import type { Response } from 'express';
 import type {
+  ScheduleConversation,
   ScheduleDeleteResult,
   ScheduleUserContext,
   FireableSchedule,
@@ -16,15 +23,20 @@ import type {
   ScheduleLimits,
   FireResult,
 } from './types';
+import type { ScheduleToolRequest } from './request';
 import type { ServerRequest } from '~/types';
+import type { WireSchedule } from './wire';
 import {
   isValidCronExpression,
   cadenceIntervalMinutes,
   computeNextRunAt,
   isValidTimezone,
+  isValidOnceAt,
 } from './cadence';
 import { ScheduleMCPError, getScheduleMCPFailureCode } from './mcp';
 import { resolveScheduleProjectId } from './types';
+
+export type { ScheduleToolRequest, ScheduleToolContext } from './request';
 
 export interface SchedulesHandlersDeps {
   preflightMCP: ScheduleMCPPreflight;
@@ -35,6 +47,8 @@ export interface SchedulesHandlersDeps {
   /** Whether the requesting user owns this chat project. Projects are user-owned,
    *  so existence and authorization are the same question. */
   canUseProject: (projectId: string, userId: string) => Promise<boolean>;
+  /** User-scoped conversation lookup; null means absent or inaccessible. */
+  getConversation: (userId: string, conversationId: string) => Promise<ScheduleConversation | null>;
   /** Filters to file ids owned by the user. */
   filterOwnedFileIds: (fileIds: string[], userId: string) => Promise<string[]>;
   /** Extends a bounded renewable upload hold on attached files so they survive to the
@@ -51,9 +65,41 @@ export interface SchedulesHandlersDeps {
    * Soft-deletes a schedule with quiescing: stops new claims, aborts in-flight
    * runs, and erases once drained. See ScheduleDeleteResult for the honest states.
    */
-  deleteSchedule: (id: string, userId: string) => Promise<ScheduleDeleteResult>;
+  deleteSchedule: (
+    id: string,
+    userId: string,
+    scope?: ScheduleAccessScope,
+  ) => Promise<ScheduleDeleteResult>;
   /** Whether this user's account deletion has begun. Fail-closed (unknown == true). */
   isUserDeleting: (userId: string) => Promise<boolean>;
+}
+
+/**
+ * Storable timing shared by schedule creation and updates. Current policy
+ * and future occurrence checks happen after create replay lookup, so an existing
+ * create can be retried after its occurrence or a policy change.
+ * `storedTimezone` preserves a PATCH's effective zone when only cadence changes.
+ */
+export function validateScheduleTiming(
+  payload: TCreateSchedule | TUpdateSchedule,
+  storedTimezone?: string,
+): string | undefined {
+  if (payload.timezone != null && !isValidTimezone(payload.timezone)) {
+    return 'Invalid IANA timezone';
+  }
+  if (payload.cadence == null) {
+    return undefined;
+  }
+  if (isOnceCadence(payload.cadence) && !isValidOnceAt(payload.cadence.at)) {
+    return 'Invalid one-time schedule date';
+  }
+  if (
+    isCronCadence(payload.cadence) &&
+    !isValidCronExpression(payload.cadence.expression, payload.timezone ?? storedTimezone)
+  ) {
+    return 'Invalid cron expression';
+  }
+  return undefined;
 }
 
 /**
@@ -115,33 +161,47 @@ const FILE_RETAIN_ATTEMPTS = 3;
  *  a rare stranded row, not a sweep, and it rides a user-facing read. */
 const DEFERRED_ERASE_RETRY_LIMIT = 5;
 
+function cadenceForDigest(cadence: TScheduleCadence) {
+  if (isCronCadence(cadence)) {
+    return { frequency: 'cron' as const, expression: cadence.expression };
+  }
+  if (isOnceCadence(cadence)) {
+    return { frequency: 'once' as const, at: cadence.at };
+  }
+  return {
+    frequency: cadence.frequency,
+    hour: cadence.hour,
+    minute: cadence.minute,
+    daysOfWeek: cadence.daysOfWeek ?? null,
+  };
+}
+
 /**
  * Digest of a create payload's FULL intent, stamped on the row at insert and never
  * edited. Replay matching compares this immutable record instead of mutable schedule
  * state, so a PATCH (or a policy auto-disable flipping `enabled`) landing between the
  * first attempt and its retry cannot make a genuine replay read as key reuse.
  */
-export function computeCreateDigest(payload: TCreateSchedule): string {
+export function computeCreateDigest(
+  payload: TCreateSchedule,
+  originConversationId?: string,
+): string {
   const canonical = JSON.stringify({
     name: payload.name,
+    ...(payload.description !== undefined && { description: payload.description }),
+    ...(originConversationId !== undefined && { originConversationId }),
     prompt: payload.prompt,
     agent_id: payload.agent_id,
     timezone: payload.timezone,
     target: payload.target,
+    ...(payload.conversationId !== undefined && { conversationId: payload.conversationId }),
     enabled: payload.enabled,
     // A structured cadence keeps EXACTLY the shape it hashed under before cron
     // existed. Adding `expression: null` to it would change the canonical JSON, and
     // with it the digest, for every schedule already out there: a create that
     // committed before a deploy and lost its response would then retry against a
     // digest that no longer matches and be refused as key reuse.
-    cadence: isCronCadence(payload.cadence)
-      ? { frequency: 'cron' as const, expression: payload.cadence.expression }
-      : {
-          frequency: payload.cadence.frequency,
-          hour: payload.cadence.hour,
-          minute: payload.cadence.minute,
-          daysOfWeek: payload.cadence.daysOfWeek ?? null,
-        },
+    cadence: cadenceForDigest(payload.cadence),
     file_ids: payload.file_ids ?? null,
     // `!== undefined`, NOT `!= null`: an OMITTED field still digests byte-identically
     // to a payload from before project scope existed, so an in-flight create retried
@@ -179,8 +239,12 @@ function sameCadenceShape(
   if (isCronCadence(payload)) {
     return isCronCadence(existing) && existing.expression === payload.expression;
   }
+  if (isOnceCadence(payload)) {
+    return isOnceCadence(existing) && existing.at === payload.at;
+  }
   return (
     !isCronCadence(existing) &&
+    !isOnceCadence(existing) &&
     existing.hour === payload.hour &&
     existing.minute === payload.minute &&
     sameList(existing.daysOfWeek, payload.daysOfWeek)
@@ -195,10 +259,12 @@ function sameCadenceShape(
 function matchesCreatedSchedule(existing: ISchedule, payload: TCreateSchedule): boolean {
   return (
     existing.name === payload.name &&
+    existing.description === payload.description &&
     existing.prompt === payload.prompt &&
     existing.agent_id === payload.agent_id &&
     existing.timezone === payload.timezone &&
     existing.target === payload.target &&
+    existing.conversationId === payload.conversationId &&
     existing.cadence?.frequency === payload.cadence.frequency &&
     sameCadenceShape(existing.cadence, payload.cadence) &&
     sameList(existing.file_ids, payload.file_ids) &&
@@ -222,34 +288,7 @@ function matchesCreateIntent(
   return matchesCreatedSchedule(existing, payload);
 }
 
-/** Public projection of a schedule — an allowlist of the `TSchedule` fields, so internal
- *  bookkeeping (_id, tenantId, __v, claimToken, lease*, slot, deleting, countedFor,
- *  balanceSkipCount, bookkept, ...) never reaches the browser. */
-export type WireSchedule = Pick<
-  ISchedule,
-  | 'id'
-  | 'user'
-  | 'name'
-  | 'prompt'
-  | 'agent_id'
-  | 'cadence'
-  | 'timezone'
-  | 'target'
-  | 'chatProjectId'
-  | 'file_ids'
-  | 'enabled'
-  | 'disabledReason'
-  | 'nextRunAt'
-  | 'lastRun'
-  | 'runCount'
-  | 'failureCount'
-  | 'configRevision'
-  | 'createdAt'
-  | 'updatedAt'
-> & {
-  /** See `TSchedule.inFlight`: the generating occurrences, from their own run rows. */
-  inFlight?: Array<{ conversationId: string }>;
-};
+export type { WireSchedule } from './wire';
 
 /** Only generating occurrences are read for the list. `ScheduleRun` is indexed by
  *  status, not by user, and `started` rows are bounded globally by the capacity
@@ -285,10 +324,9 @@ function inFlightBySchedule(runs: readonly IScheduleRun[]): Map<string, ISchedul
 
 /**
  * Public projection. `limits` is optional only for callers that have none to hand;
- * pass it wherever one is available so the card shows the destination a fire would
- * ACTUALLY use — an operator pin added after a row was written outranks its stored
- * id at fire time, and a projection reading the raw field would name the wrong
- * project until the owner next edits the schedule.
+ * pass it wherever one is available so new-chat cards show the operator-pinned
+ * destination. Existing conversation targets retain their actual project; a pin
+ * conflict refuses their fire instead of moving the conversation.
  */
 export function toWireSchedule(
   schedule: ISchedule,
@@ -299,12 +337,20 @@ export function toWireSchedule(
     id: schedule.id,
     user: schedule.user,
     name: schedule.name,
+    ...(schedule.description !== undefined && { description: schedule.description }),
+    ...(schedule.originConversationId !== undefined && {
+      originConversationId: schedule.originConversationId,
+    }),
     prompt: schedule.prompt,
     agent_id: schedule.agent_id,
     cadence: schedule.cadence,
     timezone: schedule.timezone,
     target: schedule.target,
-    chatProjectId: resolveScheduleProjectId(limits ?? {}, schedule.chatProjectId),
+    ...(schedule.conversationId != null && { conversationId: schedule.conversationId }),
+    chatProjectId:
+      schedule.target !== 'continue' && schedule.target !== 'steer'
+        ? resolveScheduleProjectId(limits ?? {}, schedule.chatProjectId)
+        : schedule.chatProjectId,
     file_ids: schedule.file_ids,
     enabled: schedule.enabled,
     disabledReason: schedule.disabledReason,
@@ -324,7 +370,7 @@ function requestUser(req: ServerRequest): { id: string; tenantId?: string; role?
   return { id: user.id, tenantId: user.tenantId, role: user.role };
 }
 
-type ScheduleHandler = (req: ServerRequest, res: Response) => Promise<void>;
+type ScheduleHandler = (req: ScheduleToolRequest, res: Response) => Promise<void>;
 
 export interface SchedulesHandlers {
   listSchedules: ScheduleHandler;
@@ -336,16 +382,6 @@ export interface SchedulesHandlers {
 }
 
 export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesHandlers {
-  /**
-   * Wellformedness only: is this payload storable at all. Anything that depends on
-   * CURRENT policy, like the interval floor, is deliberately not here, because this
-   * runs before an idempotent create can resolve its existing row and a policy change
-   * would then refuse a retry of a schedule that already committed.
-   *
-   * `storedTimezone` is the row's own, for a PATCH that edits the cadence and leaves
-   * the timezone alone. Without it the cron below was validated against `undefined`,
-   * i.e. UTC, while the schedule actually runs in its stored zone.
-   */
   /**
    * The interval floor, which is policy AT THIS MOMENT rather than a property of the
    * payload. Applied only once a create is known to be a genuinely new row: an admin
@@ -365,6 +401,57 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
       error: `Schedule interval must be at least ${limits.minIntervalMinutes} minutes`,
     });
     return false;
+  }
+
+  async function resolveToolScope(
+    req: ScheduleToolRequest,
+    res: Response,
+  ): Promise<ScheduleAccessScope | undefined | false> {
+    const context = req.scheduleToolContext;
+    if (context == null) {
+      return undefined;
+    }
+    const user = requestUser(req);
+    const snapshot = req.resolvedConversation;
+    const conversation =
+      snapshot?.conversationId === context.conversationId && snapshot.user === user.id
+        ? snapshot
+        : await deps.getConversation(user.id, context.conversationId);
+    if (
+      conversation == null ||
+      (conversation.tenantId ?? null) !== (user.tenantId ?? null) ||
+      conversation.agent_id !== context.agentId ||
+      (conversation.chatProjectId ?? null) !== context.projectId
+    ) {
+      res.status(403).json({ error: 'The current chat scope is no longer available' });
+      return false;
+    }
+    req.resolvedConversation = {
+      user: user.id,
+      conversationId: context.conversationId,
+      agent_id: conversation.agent_id ?? undefined,
+      tenantId: conversation.tenantId ?? undefined,
+      chatProjectId: conversation.chatProjectId ?? null,
+    };
+    return { ...context, tenantId: user.tenantId };
+  }
+
+  function matchesScope(schedule: ISchedule, scope?: ScheduleAccessScope): boolean {
+    return (
+      scope == null ||
+      (schedule.agent_id === scope.agentId &&
+        (schedule.tenantId ?? null) === (scope.tenantId ?? null) &&
+        (schedule.chatProjectId ?? null) === scope.projectId &&
+        (scope.projectId != null || schedule.originConversationId === scope.conversationId))
+    );
+  }
+
+  async function scopedRead(id: string, userId: string, scope?: ScheduleAccessScope) {
+    const schedule =
+      scope == null
+        ? await deps.methods.getScheduleById(id, userId)
+        : await deps.methods.getScheduleById(id, userId, scope);
+    return schedule != null && matchesScope(schedule, scope) ? schedule : null;
   }
 
   function responseAbortSignal(req: ServerRequest, res: Response): AbortSignal {
@@ -419,20 +506,9 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
     limits: ScheduleLimits,
     storedTimezone?: string,
   ): Promise<boolean> {
-    if (payload.timezone != null && !isValidTimezone(payload.timezone)) {
-      res.status(400).json({ error: 'Invalid IANA timezone' });
-      return false;
-    }
-    const timezone = payload.timezone ?? storedTimezone;
-    // Rejected here rather than left to `computeNextRunAt` returning null, which the
-    // engine reads as an unreadable cadence and disables, giving the user a saved
-    // schedule that never fires.
-    if (
-      payload.cadence != null &&
-      isCronCadence(payload.cadence) &&
-      !isValidCronExpression(payload.cadence.expression, timezone)
-    ) {
-      res.status(400).json({ error: 'Invalid cron expression' });
+    const timingError = validateScheduleTiming(payload, storedTimezone);
+    if (timingError != null) {
+      res.status(400).json({ error: timingError });
       return false;
     }
 
@@ -507,6 +583,75 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
     return chatProjectId;
   }
 
+  async function resolveWriteDestination(
+    res: Response,
+    user: ScheduleUserContext,
+    limits: ScheduleLimits,
+    payload: TCreateSchedule | TUpdateSchedule,
+    existing?: ISchedule,
+    options?: {
+      enforceRequirement?: boolean;
+      conversation?: ScheduleConversation | null;
+    },
+  ): Promise<{ chatProjectId?: string; conversationId?: string } | false> {
+    const target = payload.target ?? existing?.target ?? 'new';
+    const enforceRequirement = options?.enforceRequirement !== false;
+    const conversationId =
+      payload.conversationId ?? (payload.target === 'new' ? undefined : existing?.conversationId);
+    if (target === 'new') {
+      if (conversationId != null) {
+        res
+          .status(400)
+          .json({ error: 'A new-chat schedule cannot target an existing conversation' });
+        return false;
+      }
+      const chatProjectId = await resolveWriteProject(
+        res,
+        user.id,
+        limits,
+        payload.chatProjectId,
+        existing?.chatProjectId,
+        { enforceRequirement },
+      );
+      return chatProjectId === false ? false : { chatProjectId };
+    }
+    if (conversationId == null) {
+      res
+        .status(400)
+        .json({ error: 'An existing conversation is required for this schedule target' });
+      return false;
+    }
+    const conversation =
+      options?.conversation?.conversationId === conversationId
+        ? options.conversation
+        : await deps.getConversation(user.id, conversationId);
+    if (conversation == null || (conversation.tenantId ?? null) !== (user.tenantId ?? null)) {
+      res.status(400).json({ error: 'Conversation not found or not accessible' });
+      return false;
+    }
+    if (conversation.agent_id !== (payload.agent_id ?? existing?.agent_id)) {
+      res.status(400).json({ error: 'Conversation does not use the scheduled agent' });
+      return false;
+    }
+    const actualProject = conversation.chatProjectId ?? undefined;
+    if (
+      payload.chatProjectId !== undefined &&
+      (payload.chatProjectId ?? undefined) !== actualProject
+    ) {
+      res.status(400).json({ error: 'Schedule project must match the conversation project' });
+      return false;
+    }
+    const chatProjectId = await resolveWriteProject(
+      res,
+      user.id,
+      limits,
+      actualProject ?? null,
+      undefined,
+      { enforceRequirement },
+    );
+    return chatProjectId === false ? false : { chatProjectId, conversationId };
+  }
+
   /**
    * Extends the bounded upload hold on attached files (so they survive to the first
    * fire, which consumes them permanently), with bounded retry. Returns false when it
@@ -565,22 +710,32 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
       .catch((err) => logger.warn('[schedules] deferred deletion retry failed', err));
   }
 
-  async function listSchedules(req: ServerRequest, res: Response): Promise<void> {
+  async function listSchedules(req: ScheduleToolRequest, res: Response): Promise<void> {
     const user = requestUser(req);
+    const scope = await resolveToolScope(req, res);
+    if (scope === false) return;
     // Three independent, user-scoped reads; the generating runs ride alongside so
     // the list can name the chat each one is producing without a second round trip
     // per card.
     const [schedules, limits, inFlight] = await Promise.all([
-      deps.methods.getSchedulesByUser(user.id),
+      scope == null
+        ? deps.methods.getSchedulesByUser(user.id)
+        : deps.methods.getSchedulesByUser(user.id, scope),
       deps.getLimits(user),
       deps.methods.getActiveRunsForUser(user.id, LISTED_RUN_STATUSES),
     ]);
     const inFlightBySchedule_ = inFlightBySchedule(inFlight);
-    retryDeferredDeletions(user.id);
+    if (scope == null) retryDeferredDeletions(user.id);
     res.json({
-      schedules: schedules.map((schedule) =>
-        toWireSchedule(schedule, limits, inFlightBySchedule_.get(schedule.id)),
-      ),
+      schedules: schedules
+        .filter((schedule) => matchesScope(schedule, scope))
+        .map((schedule) =>
+          toWireSchedule(
+            schedule,
+            scope == null ? limits : undefined,
+            inFlightBySchedule_.get(schedule.id),
+          ),
+        ),
       limits: {
         maxPerUser: limits.maxPerUser,
         // minIntervalMinutes ships with the list so the dialog can refuse a cadence
@@ -592,14 +747,16 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
     });
   }
 
-  async function getSchedule(req: ServerRequest, res: Response): Promise<void> {
+  async function getSchedule(req: ScheduleToolRequest, res: Response): Promise<void> {
     const { id } = req.params as { id: string };
     const user = requestUser(req);
+    const scope = await resolveToolScope(req, res);
+    if (scope === false) return;
     // The run read starts before ownership is established, so it is scoped to the
     // caller — the same user-bound query the list uses — and narrowed here, rather
     // than a by-schedule read that would touch rows the caller may not own.
     const [schedule, limits, inFlight] = await Promise.all([
-      deps.methods.getScheduleById(id, user.id),
+      scopedRead(id, user.id, scope),
       deps.getLimits(user),
       deps.methods.getActiveRunsForUser(user.id, LISTED_RUN_STATUSES),
     ]);
@@ -610,13 +767,13 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
     res.json(
       toWireSchedule(
         schedule,
-        limits,
+        scope == null ? limits : undefined,
         inFlight.filter((run) => run.scheduleId === id),
       ),
     );
   }
 
-  async function createSchedule(req: ServerRequest, res: Response): Promise<void> {
+  async function createSchedule(req: ScheduleToolRequest, res: Response): Promise<void> {
     const mcpSignal = responseAbortSignal(req, res);
     if (mcpSignal.aborted) return;
     const parsed = createSchedulePayloadSchema.safeParse(req.body);
@@ -625,6 +782,20 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
       return;
     }
     const user = requestUser(req);
+    const scope = await resolveToolScope(req, res);
+    if (scope === false) return;
+    if (scope != null && parsed.data.agent_id !== scope.agentId) {
+      res.status(400).json({ error: 'Schedule agent must match the current chat' });
+      return;
+    }
+    if (
+      scope != null &&
+      parsed.data.chatProjectId !== undefined &&
+      (parsed.data.chatProjectId ?? null) !== scope.projectId
+    ) {
+      res.status(400).json({ error: 'Schedule project must match the current chat' });
+      return;
+    }
     if (await rejectIfUserDeleting(deps, user.id, res)) {
       return;
     }
@@ -640,7 +811,7 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
     // the digest records one create INTENT, and today's policy is not part of that
     // intent. Resolving first made an operator's pin change (or a deleted project)
     // re-digest a genuine retry into a mismatch.
-    const digest = computeCreateDigest(parsed.data);
+    const digest = computeCreateDigest(parsed.data, req.scheduleToolContext?.conversationId);
 
     /**
      * Answers a retry with the row its FIRST attempt committed — an ESTABLISHED
@@ -650,6 +821,10 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
      * compensates: rollback belongs exclusively to the attempt that inserted a row.
      */
     const respondToReplay = async (existing: ISchedule): Promise<void> => {
+      if (!matchesScope(existing, scope)) {
+        res.status(404).json({ error: 'Schedule not found' });
+        return;
+      }
       // A key identifies one create INTENT. Reusing it for different content is a
       // client bug, and silently returning the first row would hide it behind a 201
       // describing a schedule the caller did not ask for — so say so instead.
@@ -677,7 +852,16 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
         });
         if (next != null) {
           try {
-            await deps.methods.armSchedule(existing.id, next);
+            if (scope == null) {
+              await deps.methods.armSchedule(existing.id, next);
+            } else {
+              await deps.methods.armSchedule(
+                existing.id,
+                next,
+                existing.configRevision ?? 0,
+                scope,
+              );
+            }
           } catch (armError) {
             logger.error(`[schedules] replay arming failed for ${existing.id}`, armError);
             res.status(500).json({ error: 'Failed to create schedule. Please retry.' });
@@ -685,13 +869,13 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
           }
         }
       }
-      const fresh = await deps.methods.getScheduleById(existing.id, user.id);
+      const fresh = await scopedRead(existing.id, user.id, scope);
       if (fresh == null) {
         res.status(410).json({ error: 'Schedule no longer exists' });
         return;
       }
       logger.info(`[schedules] create retry resolved to ${existing.id} for user ${user.id}`);
-      res.status(201).json(toWireSchedule(fresh, limits));
+      res.status(201).json(toWireSchedule(fresh, scope == null ? limits : undefined));
     };
 
     // Resolve a retry BEFORE the capacity pre-check: a retry whose first attempt
@@ -719,15 +903,24 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
     // requirement, a deleted project, or a moved pin answer 400 for a row that already
     // exists — pushing the client to rotate its key and create a duplicate schedule,
     // which is precisely what the idempotency key exists to prevent.
-    const chatProjectId = await resolveWriteProject(
+    const destination = await resolveWriteDestination(
       res,
-      user.id,
+      user,
       limits,
-      parsed.data.chatProjectId,
+      scope != null ? { ...parsed.data, chatProjectId: scope.projectId } : parsed.data,
+      undefined,
+      {
+        conversation: scope != null ? req.resolvedConversation : undefined,
+      },
     );
-    if (chatProjectId === false) {
+    if (destination === false) {
       return;
     }
+    if (scope != null && (destination.chatProjectId ?? null) !== scope.projectId) {
+      res.status(400).json({ error: 'Schedule destination conflicts with the current chat scope' });
+      return;
+    }
+    const { chatProjectId } = destination;
     // Fail fast on an obvious over-limit BEFORE retaining attachments, so the common
     // case never clears an upload TTL it then can't use. The {user, slot} partial
     // unique index below is the atomic arbiter for the concurrent-create race.
@@ -761,6 +954,10 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
           scheduleId: id,
         })
       : undefined;
+    if (parsed.data.enabled && isOnceCadence(parsed.data.cadence) && nextRunAt == null) {
+      res.status(400).json({ error: 'Schedule time is in the past' });
+      return;
+    }
     // Retain attachments BEFORE creating, so a persisted (claimable) schedule never
     // references uploads still eligible for TTL expiry: that leaves no create-then-
     // retain window where a crash or a failed rollback makes the two inconsistent.
@@ -786,6 +983,9 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
     const created = await deps.methods.createScheduleWithSlot(
       {
         ...parsed.data,
+        ...(req.scheduleToolContext != null && {
+          originConversationId: req.scheduleToolContext.conversationId,
+        }),
         chatProjectId: chatProjectId ?? undefined,
         id,
         user: user.id as never,
@@ -848,7 +1048,10 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
     if (nextRunAt) {
       let armedNow: boolean;
       try {
-        armedNow = await deps.methods.armSchedule(id, nextRunAt, created.configRevision ?? 0);
+        armedNow =
+          scope == null
+            ? await deps.methods.armSchedule(id, nextRunAt, created.configRevision ?? 0)
+            : await deps.methods.armSchedule(id, nextRunAt, created.configRevision ?? 0, scope);
       } catch (armError) {
         // Roll back ONLY the exact unarmed, unedited revision this attempt inserted.
         // An ambiguously-committed arm, a concurrent replay that armed the row and
@@ -859,9 +1062,9 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
           .deleteUnarmedSchedule(id, user.id, created.configRevision ?? 0)
           .catch(() => null);
         if (rolledBack === 'kept') {
-          const current = await deps.methods.getScheduleById(id, user.id);
+          const current = await scopedRead(id, user.id, scope);
           if (current != null) {
-            res.status(201).json(toWireSchedule(current, limits));
+            res.status(201).json(toWireSchedule(current, scope == null ? limits : undefined));
             return;
           }
         }
@@ -873,7 +1076,7 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
       // Whether THIS call armed or a concurrent actor got there first (a replay's
       // arm, a PATCH whose own arming governs), the response reports the row as it
       // now stands; only a row the deletion cascade claimed answers 410.
-      const current = await deps.methods.getScheduleById(id, user.id);
+      const current = await scopedRead(id, user.id, scope);
       if (current == null) {
         res.status(410).json({ error: 'Schedule no longer exists' });
         return;
@@ -885,14 +1088,14 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
         logger.warn(`[schedules] create for ${id} left unarmed after a concurrent edit`);
       }
       logger.info(`[schedules] created ${id} for user ${user.id}`);
-      res.status(201).json(toWireSchedule(current, limits));
+      res.status(201).json(toWireSchedule(current, scope == null ? limits : undefined));
       return;
     }
     logger.info(`[schedules] created ${id} for user ${user.id}`);
-    res.status(201).json(toWireSchedule(created, limits));
+    res.status(201).json(toWireSchedule(created, scope == null ? limits : undefined));
   }
 
-  async function updateSchedule(req: ServerRequest, res: Response): Promise<void> {
+  async function updateSchedule(req: ScheduleToolRequest, res: Response): Promise<void> {
     const mcpSignal = responseAbortSignal(req, res);
     if (mcpSignal.aborted) return;
     const parsed = updateSchedulePayloadSchema.safeParse(req.body);
@@ -915,10 +1118,12 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
     }
     const { id } = req.params as { id: string };
     const user = requestUser(req);
+    const scope = await resolveToolScope(req, res);
+    if (scope === false) return;
     if (await rejectIfUserDeleting(deps, user.id, res)) {
       return;
     }
-    const existing = await deps.methods.getScheduleById(id, user.id);
+    const existing = await scopedRead(id, user.id, scope);
     if (mcpSignal.aborted) return;
     if (existing == null) {
       res.status(404).json({ error: 'Schedule not found' });
@@ -931,6 +1136,18 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
     // the client says which revision it edited.
     if (expectedConfigRevision != null && existing.configRevision !== expectedConfigRevision) {
       res.status(409).json({ error: 'Schedule was modified concurrently. Please retry.' });
+      return;
+    }
+    if (scope != null && parsed.data.agent_id != null && parsed.data.agent_id !== scope.agentId) {
+      res.status(400).json({ error: 'Schedule agent must match the current chat' });
+      return;
+    }
+    if (
+      scope != null &&
+      parsed.data.chatProjectId !== undefined &&
+      (parsed.data.chatProjectId ?? null) !== scope.projectId
+    ) {
+      res.status(400).json({ error: 'Schedule project must match the current chat' });
       return;
     }
     const limits = await deps.getLimits(user);
@@ -957,6 +1174,14 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
     // a schedule that now runs too often, and a pure rename of a disabled row below a
     // raised floor is still left alone: it changes no timing and the API accepts it.
     if ((timingChanged || enabled) && !withinIntervalFloor(res, cadence, timezone, limits)) {
+      return;
+    }
+    if (
+      enabled &&
+      isOnceCadence(cadence) &&
+      computeNextRunAt({ cadence, timezone, scheduleId: existing.id }) == null
+    ) {
+      res.status(400).json({ error: 'Schedule time is in the past' });
       return;
     }
     // A supplied agent_id is validated in validatePayload; when an edit omits it
@@ -990,37 +1215,30 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
     // reason: an edit that "succeeds" into a state the next fire auto-disables is not
     // a success. A disabling edit skips the requirement so a schedule stopped by a
     // project_required/project_deleted auto-disable can still be turned off or renamed.
-    let chatProjectId: string | undefined;
-    if (enabled) {
-      const resolved = await resolveWriteProject(
-        res,
-        user.id,
-        limits,
-        parsed.data.chatProjectId,
-        existing.chatProjectId,
-      );
+    let destination: { chatProjectId?: string; conversationId?: string } | undefined;
+    if (
+      enabled ||
+      parsed.data.target != null ||
+      parsed.data.conversationId != null ||
+      parsed.data.chatProjectId !== undefined
+    ) {
+      const resolved = await resolveWriteDestination(res, user, limits, parsed.data, existing, {
+        enforceRequirement: enabled,
+        conversation: scope != null ? req.resolvedConversation : undefined,
+      });
       if (resolved === false) {
         return;
       }
-      chatProjectId = resolved;
-    } else if (parsed.data.chatProjectId !== undefined) {
-      // `!== undefined`, so an explicit `null` lands here too: a pin disagreement is
-      // refused whether the edit assigns a different project or clears the scope
-      // outright. Only the REQUIREMENT is waived for a disabling edit — without that
-      // distinction a pinned deployment accepted `{enabled: false, chatProjectId: null}`
-      // and unset the row while still reporting the pin back on the wire.
-      const resolved = await resolveWriteProject(
-        res,
-        user.id,
-        limits,
-        parsed.data.chatProjectId,
-        undefined,
-        { enforceRequirement: false },
-      );
-      if (resolved === false) {
-        return;
-      }
-      chatProjectId = resolved;
+      destination = resolved;
+    }
+    const chatProjectId = destination?.chatProjectId;
+    if (
+      scope != null &&
+      destination != null &&
+      (destination.chatProjectId ?? null) !== scope.projectId
+    ) {
+      res.status(400).json({ error: 'Schedule destination conflicts with the current chat scope' });
+      return;
     }
     const cadenceChanged =
       parsed.data.cadence != null || parsed.data.timezone != null || parsed.data.enabled != null;
@@ -1031,6 +1249,9 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
     // cadence one, or a name/prompt edit would silently leave it dead.
     const needsArming = existing.nextRunAt == null;
     const update: Partial<ISchedule> = { ...editedFields } as Partial<ISchedule>;
+    if (scope != null && parsed.data.target != null) {
+      update.originConversationId = scope.conversationId;
+    }
     // `chatProjectId` is resolved, not copied: an operator pin rewrites it even when
     // this PATCH never mentioned the field, so the row converges on the policy
     // instead of drifting until the owner happens to touch the picker.
@@ -1038,7 +1259,14 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
     // ONLY an explicit `null` clears the scope. A disabling edit resolves nothing and
     // must leave the stored destination intact, or turning a schedule off would
     // silently forget where its runs used to land.
-    const clearsProject = parsed.data.chatProjectId === null && chatProjectId == null;
+    const clearsProject =
+      destination != null &&
+      chatProjectId == null &&
+      (parsed.data.chatProjectId === null || (parsed.data.target ?? existing.target) !== 'new');
+    const clearsConversation = parsed.data.target === 'new' && existing.conversationId != null;
+    if (destination?.conversationId != null) {
+      update.conversationId = destination.conversationId;
+    }
     if (chatProjectId != null) {
       update.chatProjectId = chatProjectId;
     }
@@ -1055,10 +1283,11 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
       update.balanceSkipCount = 0;
     }
     const unset =
-      reEnabled || clearsProject
+      reEnabled || clearsProject || clearsConversation
         ? {
             ...(reEnabled && { disabledReason: 1 as const }),
             ...(clearsProject && { chatProjectId: 1 as const }),
+            ...(clearsConversation && { conversationId: 1 as const }),
           }
         : undefined;
     // Retain the new attachments BEFORE committing the edit, so a retention failure
@@ -1105,11 +1334,12 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
     // loser simply retries against fresh state.
     const schedule = await deps.methods.updateScheduleById(existing.id, user.id, update, unset, {
       expectedConfigRevision: existing.configRevision,
+      ...(scope != null && { scope }),
     });
     if (schedule == null) {
       // Either the row is gone, or a concurrent edit moved the revision. Distinguish
       // them so the owner sees a retryable conflict rather than a phantom 404.
-      const stillThere = await deps.methods.getScheduleById(existing.id, user.id);
+      const stillThere = await scopedRead(existing.id, user.id, scope);
       if (stillThere != null) {
         res.status(409).json({ error: 'Schedule was modified concurrently. Please retry.' });
         return;
@@ -1117,15 +1347,20 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
       res.status(404).json({ error: 'Schedule not found' });
       return;
     }
-    res.json(toWireSchedule(schedule, limits));
+    res.json(toWireSchedule(schedule, scope == null ? limits : undefined));
   }
 
-  async function deleteSchedule(req: ServerRequest, res: Response): Promise<void> {
+  async function deleteSchedule(req: ScheduleToolRequest, res: Response): Promise<void> {
     const { id } = req.params as { id: string };
+    const scope = await resolveToolScope(req, res);
+    if (scope === false) return;
     // Quiesce-then-erase: disable + mark deleting (stops new claims, hides it),
     // abort in-flight loopback jobs, and erase once drained — so a live run's
     // evidence is never destroyed out from under it.
-    const result = await deps.deleteSchedule(id, requestUser(req).id);
+    const result =
+      scope == null
+        ? await deps.deleteSchedule(id, requestUser(req).id)
+        : await deps.deleteSchedule(id, requestUser(req).id, scope);
     if (result === 'not_found') {
       res.status(404).json({ error: 'Schedule not found' });
       return;

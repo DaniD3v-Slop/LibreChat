@@ -2,6 +2,7 @@ const {
   createAgentTriggerService,
   createCheckpointDeletionReclaimer,
   createAgentContinuationResolver,
+  createScheduleContinueResolver,
   createAgentEventContinueResolver,
   createSubagentCompletionWakeupResolver,
   SUBAGENT_COMPLETION_SOURCE,
@@ -57,6 +58,10 @@ service = createAgentTriggerService({
   settleSourceBeforeDeadLetter: queuedTurnLifecycle.settleBeforeDeadLetter,
   prepareContinue: createAgentContinuationResolver({
     eventActor: eventActorAdapter,
+    schedule: createScheduleContinueResolver({
+      methods,
+      getGenerationJob: (conversationId) => GenerationJobManager.getJob(conversationId),
+    }),
     internalSources: new Map([
       [SUBAGENT_COMPLETION_SOURCE, subagentCompletionAdapter],
       [BACKGROUND_TOOL_COMPLETION_SOURCE, backgroundToolCompletionAdapter],

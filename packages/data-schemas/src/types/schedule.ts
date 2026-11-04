@@ -1,5 +1,6 @@
 import type {
   ScheduleRunStatus,
+  ScheduleTarget,
   ScheduleDisabledReason,
   TScheduleCadence,
 } from 'librechat-data-provider';
@@ -12,13 +13,18 @@ export interface ISchedule {
   user: Types.ObjectId;
   tenantId?: string;
   name: string;
+  description?: string;
   prompt: string;
   agent_id: string;
   cadence: TScheduleCadence;
   timezone: string;
-  target: 'new';
-  /** Chat project every run's conversation is filed under. Re-validated at each
-   *  fire; a pinned operator project (interface.schedules.projectId) overrides it. */
+  target: ScheduleTarget;
+  /** Existing chat used by continue and steer targets. */
+  conversationId?: string;
+  /** Immutable creation context used to scope tools outside a chat project. */
+  originConversationId?: string;
+  /** Revalidated at every fire. A project pin can redirect new chats; existing
+   *  conversation targets must match their conversation's actual project. */
   chatProjectId?: string;
   file_ids?: string[];
   tools?: string[];

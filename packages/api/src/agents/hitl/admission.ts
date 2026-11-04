@@ -1,4 +1,5 @@
 import type { TToolApprovalPolicy } from 'librechat-data-provider';
+import type { SerializableJobData } from '~/stream/interfaces/IJobStore';
 import type { PluginHookSource } from '~/agents/hooks/source';
 import type { MCPToolAlias } from '~/tools/classification';
 import type { ResolvedToolApprovalHook } from './hooks';
@@ -7,9 +8,13 @@ import {
   isHITLEnabled,
   isToolApprovalPauseCapable,
   isToolDeniedByApprovalPolicy,
+  resolveToolApprovalPolicy,
+  exemptScheduleReadsFromApproval,
 } from './policy';
+import { SCHEDULE_CHAT_TOOL_NAME, SCHEDULE_WRITE_TOOL_NAMES } from '~/agents/schedule';
 import { ASK_USER_QUESTION_TOOL_NAME } from './askUserQuestionTool';
 import { resolvedToolApprovalHooksCanMatch } from './hooks';
+import { collectReachableAgents } from '../traversal';
 
 interface ApprovalToolReference {
   readonly name?: string;
@@ -58,32 +63,26 @@ function collectApprovalAgents(roots: readonly (ToolApprovalAdmissionAgent | nul
   agents: ToolApprovalAdmissionAgent[];
   lazyAgentIds: Set<string | undefined>;
 } {
-  const agents: ToolApprovalAdmissionAgent[] = [];
-  const visited = new Set<ToolApprovalAdmissionAgent>();
-  const pending = [...roots];
-  const lazyAgentIds = new Set<string | undefined>();
-
-  for (let index = 0; index < pending.length; index++) {
-    const agent = pending[index];
-    if (agent == null || visited.has(agent)) {
-      continue;
-    }
-    visited.add(agent);
-    agents.push(agent);
-    pending.push(...(agent.subagentAgentConfigs ?? []));
-    if ((agent.lazySubagentConfigs?.length ?? 0) > 0) {
-      for (const lazyAgent of agent.lazySubagentConfigs ?? []) {
-        lazyAgentIds.add(lazyAgent?.id);
-      }
-      pending.push(...(agent.lazySubagentConfigs ?? []));
-    }
-    pending.push(...(agent.subagentGraphMemberMetadata ?? []));
-    for (const graph of agent.subagentGraphConfigs ?? []) {
-      pending.push(...(graph.memberConfigs ?? []));
-    }
-  }
-
+  const agents = collectReachableAgents(roots);
+  const lazyAgentIds = new Set(
+    agents.flatMap((agent) => (agent.lazySubagentConfigs ?? []).map((child) => child?.id)),
+  );
   return { agents, lazyAgentIds };
+}
+
+function agentsRequestScheduleChat(agents: readonly ToolApprovalAdmissionAgent[]): boolean {
+  return agents.some(
+    (agent) =>
+      agentHasTool(agent, SCHEDULE_CHAT_TOOL_NAME) ||
+      SCHEDULE_WRITE_TOOL_NAMES.some((name) => agentHasTool(agent, name)),
+  );
+}
+
+/** Whether an eager or declared lazy agent can write schedules. */
+export function agentGraphRequestsScheduleChat(
+  roots: readonly (ToolApprovalAdmissionAgent | null | undefined)[],
+): boolean {
+  return agentsRequestScheduleChat(collectReachableAgents(roots));
 }
 
 /**
@@ -93,13 +92,18 @@ function collectApprovalAgents(roots: readonly (ToolApprovalAdmissionAgent | nul
  * boundary remains the final fail-closed durability check.
  */
 export function canAgentGraphPause({
-  policy,
+  policy: configuredPolicy,
   agents,
   hostGeneratedToolNames = [],
   resolvedProgrammaticHooks = [],
   pluginHookSource,
   askUserQuestionAdminDisabled = false,
 }: ToolApprovalAdmissionInput): boolean {
+  const approvalGraph = collectApprovalAgents(agents);
+  const policy = resolveToolApprovalPolicy({
+    endpoint: configuredPolicy,
+    scheduleChat: agentsRequestScheduleChat(approvalGraph.agents),
+  });
   const asksUserQuestion =
     !askUserQuestionAdminDisabled &&
     !isToolDeniedByApprovalPolicy(policy, ASK_USER_QUESTION_TOOL_NAME) &&
@@ -108,11 +112,16 @@ export function canAgentGraphPause({
     return asksUserQuestion;
   }
 
-  const approvalGraph = collectApprovalAgents(agents);
   const toolOwners = new Map<string, Set<string | undefined>>();
   const aliases: MCPToolAlias[] = [];
   const aliasesByToolName = new Map<string, string[]>();
   const addToolName = (name: unknown, agentId?: string) => {
+    if (name === SCHEDULE_CHAT_TOOL_NAME) {
+      for (const writeName of SCHEDULE_WRITE_TOOL_NAMES) {
+        addToolName(writeName, agentId);
+      }
+      return;
+    }
     if (typeof name === 'string' && name !== ASK_USER_QUESTION_TOOL_NAME) {
       const owners = toolOwners.get(name) ?? new Set<string | undefined>();
       owners.add(agentId);
@@ -144,7 +153,7 @@ export function canAgentGraphPause({
     }
   }
 
-  const effectivePolicy = healToolApprovalPolicy(policy, aliases);
+  const effectivePolicy = exemptScheduleReadsFromApproval(healToolApprovalPolicy(policy, aliases));
   const knownToolCanPause = Array.from(toolOwners).some(([toolName, agentIds]) => {
     const matcherNames = [toolName, ...(aliasesByToolName.get(toolName) ?? [])];
     const pluginHookCanAsk = pluginHookSource?.hasToolApprovalHooks?.([toolName]) === true;
@@ -192,8 +201,32 @@ export function agentRunUsesCheckpointer({
   'policy' | 'agents' | 'askUserQuestionAdminDisabled'
 >): boolean {
   return (
-    isHITLEnabled(policy) ||
+    isHITLEnabled(
+      resolveToolApprovalPolicy({
+        endpoint: policy,
+        scheduleChat: agentGraphRequestsScheduleChat(agents),
+      }),
+    ) ||
     (!askUserQuestionAdminDisabled &&
       agents.some((agent) => agent != null && agentHasTool(agent, ASK_USER_QUESTION_TOOL_NAME)))
+  );
+}
+
+/** Terminal owners prune exact generation scopes even when no approval is currently pending. */
+export function shouldPruneAgentCheckpoint(
+  metadata:
+    | Pick<
+        SerializableJobData,
+        'checkpointNamespace' | 'pendingAction' | 'resolvedAskUserQuestions'
+      >
+    | undefined,
+  policy?: TToolApprovalPolicy,
+): boolean {
+  return (
+    (typeof metadata?.checkpointNamespace === 'string' &&
+      metadata.checkpointNamespace.length > 0) ||
+    isHITLEnabled(policy) ||
+    metadata?.pendingAction != null ||
+    (metadata?.resolvedAskUserQuestions?.length ?? 0) > 0
   );
 }

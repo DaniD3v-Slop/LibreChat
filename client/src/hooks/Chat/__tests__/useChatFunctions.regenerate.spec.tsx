@@ -8,9 +8,9 @@ import type {
   TMessage,
   TSubmission,
 } from 'librechat-data-provider';
+import { isPasteSubmitted, selectActiveBranchTail } from '~/utils';
 import { revealedQueuedTurnFamily } from '~/store/steer';
 import useChatFunctions from '../useChatFunctions';
-import { isPasteSubmitted } from '~/utils';
 
 const mockNavigate = jest.fn();
 const mockSetShowStopButton = jest.fn();
@@ -127,7 +127,11 @@ const conversation = (conversationId: string) =>
 function renderAsk(
   messages: TMessage[] | undefined,
   conversationId = 'conversation-1',
-  options: { endpoint?: TConversation['endpoint']; isSubmitting?: boolean } = {},
+  options: {
+    endpoint?: TConversation['endpoint'];
+    isSubmitting?: boolean;
+    latestMessage?: TMessage | null;
+  } = {},
 ) {
   const setMessages = jest.fn();
   const setSubmission = jest.fn();
@@ -139,7 +143,7 @@ function renderAsk(
   const hook = renderHook(() =>
     useChatFunctions({
       isSubmitting: options.isSubmitting ?? false,
-      latestMessage: messages?.at(-1) ?? null,
+      latestMessage: options.latestMessage ?? messages?.at(-1) ?? null,
       conversation: immutableConversation,
       getMessages,
       setMessages,
@@ -152,6 +156,23 @@ function renderAsk(
 }
 
 describe('useChatFunctions ask', () => {
+  it('parents the next submission on a scheduled continuation after history reconciliation', () => {
+    const messages = [
+      userMessage('user-1'),
+      assistantMessage('old-answer', 'user-1'),
+      userMessage('scheduled-user', 'old-answer'),
+      assistantMessage('reminder-answer', 'scheduled-user'),
+    ];
+    const { result, setSubmission } = renderAsk(messages, 'conversation-1', {
+      latestMessage: selectActiveBranchTail(messages, 'conversation-1'),
+    });
+    act(() => {
+      result.current.ask({ text: 'Thanks' });
+    });
+    const submission = setSubmission.mock.calls.at(-1)?.[0] as TSubmission;
+    expect(submission.userMessage.parentMessageId).toBe('reminder-answer');
+  });
+
   beforeEach(() => {
     jest.clearAllMocks();
     mockGetQueryData.mockReturnValue({});

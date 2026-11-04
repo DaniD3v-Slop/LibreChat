@@ -123,6 +123,44 @@ const fillRequiredFields = async (user: ReturnType<typeof userEvent.setup>) => {
 };
 
 describe('ScheduleDialog', () => {
+  it.each(['continue', 'steer'] as const)(
+    'preserves an existing %s destination when renaming',
+    async (target) => {
+      const user = userEvent.setup();
+      renderDialog(storedSchedule({ target, conversationId: 'existing-chat' }));
+      await user.type(screen.getByPlaceholderText('com_ui_schedule_name_placeholder'), ' updated');
+      await user.click(screen.getByRole('button', { name: 'com_ui_save' }));
+      await waitFor(() =>
+        expect(mockMutate).toHaveBeenCalledWith({
+          id: 'sched-1',
+          payload: { name: 'Digest updated', expectedConfigRevision: 3 },
+        }),
+      );
+    },
+  );
+
+  it('displays a stored one-shot without recurring timing controls and preserves it on rename', async () => {
+    const user = userEvent.setup();
+    renderDialog(storedSchedule({ cadence: { frequency: 'once', at: '2027-01-15T09:00' } }));
+    expect(screen.getByTestId('schedule-summary')).toHaveTextContent('com_ui_schedule_runs_once');
+    expect(
+      screen.queryByRole('radiogroup', { name: 'com_ui_schedule_frequency' }),
+    ).not.toBeInTheDocument();
+    await user.type(screen.getByPlaceholderText('com_ui_schedule_name_placeholder'), ' updated');
+    await user.click(screen.getByRole('button', { name: 'com_ui_save' }));
+    await waitFor(() =>
+      expect(mockMutate).toHaveBeenCalledWith({
+        id: 'sched-1',
+        payload: { name: 'Digest updated', expectedConfigRevision: 3 },
+      }),
+    );
+  });
+
+  it('preserves the existing creation options', () => {
+    renderDialog();
+    expect(screen.queryByRole('radio', { name: 'com_ui_schedule_once' })).not.toBeInTheDocument();
+  });
+
   afterEach(() => {
     jest.clearAllMocks();
     mockLimits = { maxPerUser: 10, minIntervalMinutes: 0, requireProject: false };

@@ -91,6 +91,48 @@
     "authConfig": []
   },
   {
+    "name": "Schedules",
+    "pluginKey": "schedule_chat",
+    "description": "Create, read, update and delete schedules for this agent in the current project or chat.",
+    "agentsOnly": true,
+    "authConfig": []
+  },
+  {
+    "name": "Delete Schedule",
+    "pluginKey": "delete_schedule",
+    "description": "Create, read, update and delete schedules for this agent in the current project or chat.",
+    "agentsOnly": true,
+    "authConfig": []
+  },
+  {
+    "name": "Update Schedule",
+    "pluginKey": "update_schedule",
+    "description": "Create, read, update and delete schedules for this agent in the current project or chat.",
+    "agentsOnly": true,
+    "authConfig": []
+  },
+  {
+    "name": "Get Schedule",
+    "pluginKey": "get_schedule",
+    "description": "Create, read, update and delete schedules for this agent in the current project or chat.",
+    "agentsOnly": true,
+    "authConfig": []
+  },
+  {
+    "name": "List Schedules",
+    "pluginKey": "list_schedules",
+    "description": "Create, read, update and delete schedules for this agent in the current project or chat.",
+    "agentsOnly": true,
+    "authConfig": []
+  },
+  {
+    "name": "Create Schedule",
+    "pluginKey": "create_schedule",
+    "description": "Create, read, update and delete schedules for this agent in the current project or chat.",
+    "agentsOnly": true,
+    "authConfig": []
+  },
+  {
     "name": "Ask User",
     "pluginKey": "ask_user_question",
     "description": "Let the agent pause mid-run to ask you a clarifying question and wait for your answer.",

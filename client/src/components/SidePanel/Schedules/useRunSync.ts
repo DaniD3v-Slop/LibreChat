@@ -1,5 +1,6 @@
 import { useRef, useEffect } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
+import { Constants, QueryKeys } from 'librechat-data-provider';
 import type { TSchedule } from 'librechat-data-provider';
 import { trackScheduledRun, releaseScheduledRun } from '~/data-provider/Schedules/admission';
 import { invalidateConversationLists } from '~/utils';
@@ -17,7 +18,7 @@ const inFlightChats = (schedule: Pick<TSchedule, 'inFlight'>): string[] =>
 const runState = (schedule: Occurrences): string => {
   const { lastRun } = schedule;
   const live = inFlightChats(schedule).sort().join(',');
-  return `${live}|${lastRun?.conversationId ?? ''}:${lastRun?.status ?? ''}`;
+  return `${live}|${lastRun?.conversationId ?? ''}:${lastRun?.status ?? ''}:${lastRun?.firedAt ?? ''}`;
 };
 
 /** A schedule that has never run. What a schedule this client has not seen before
@@ -25,13 +26,14 @@ const runState = (schedule: Occurrences): string => {
 const IDLE_STATE = runState({});
 
 /**
- * Puts an automatic occurrence's chat in the sidebar, the same way Run Now does.
+ * Reconciles automatic occurrences in the chat shell, including with the
+ * schedules panel closed.
  *
  * An automatic occurrence is the one generation nothing in this client starts, so
  * no submission, stream or event handler ever tells the sidebar its chat exists —
  * and the list's own five-minute staleness leaves it out of a tab that stays
- * focused. This panel's query is already polling for the cards, and it names the
- * chat each generating occurrence is producing, read from the run's own row rather
+ * focused. The shared schedules query names each generating occurrence's chat,
+ * read from the run's own row rather
  * than inferred from the schedule. Every one is handed to the admission watch Run
  * Now uses, on every observation: that watch is the one place that decides whether
  * an id is landed, in flight, or — having given up on a delivery deferred past its
@@ -50,13 +52,43 @@ const IDLE_STATE = runState({});
  * mid-flight (which fences the `lastRun` projection) still cannot hide a
  * settlement. The first observation has nothing earlier to compare against, so it
  * re-reads if any schedule has run at all: the sidebar may have been read before
- * that run, and nothing here can tell — one refetch on opening the panel is the
- * honest price of that.
+ * that run, and nothing here can tell — the shell's first observation must
+ * reconcile it too.
  */
-export default function useRunSync(schedules?: TSchedule[], observedAt?: number): void {
+export default function useRunSync(
+  schedules?: TSchedule[],
+  observedAt?: number,
+  conversationId?: string,
+  isSubmitting = false,
+): void {
   const queryClient = useQueryClient();
+  const refreshedOccurrence = useRef('');
   const states = useRef<Map<string, string> | null>(null);
   const announced = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    // Leave the occurrence unconsumed during a local stream so the idle render reconciles it.
+    if (!schedules || !conversationId || conversationId === Constants.NEW_CONVO || isSubmitting) {
+      return;
+    }
+    const occurrences = schedules.flatMap(({ id, lastRun }) =>
+      lastRun?.conversationId === conversationId &&
+      (lastRun.status === 'success' ||
+        lastRun.status === 'error' ||
+        lastRun.status === 'interrupted')
+        ? [`${id}:${lastRun.firedAt}:${lastRun.status}`]
+        : [],
+    );
+    if (occurrences.length === 0) {
+      return;
+    }
+    const marker = `${conversationId}|${occurrences.sort().join('|')}`;
+    if (refreshedOccurrence.current === marker) {
+      return;
+    }
+    refreshedOccurrence.current = marker;
+    void queryClient.invalidateQueries({ queryKey: [QueryKeys.messages, conversationId] });
+  }, [schedules, observedAt, conversationId, isSubmitting, queryClient]);
 
   useEffect(
     () => () => {

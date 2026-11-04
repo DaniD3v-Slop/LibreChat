@@ -9,7 +9,7 @@ const {
   isPendingActionStale,
   toClientPendingAction,
   getGenerationElapsedMs,
-  isHITLEnabled,
+  shouldPruneAgentCheckpoint,
   captureAgentCheckpointGeneration,
   deleteAgentCheckpoint,
   attachAskUserQuestionAnswers,
@@ -686,12 +686,11 @@ router.post('/chat/abort', configMiddleware, async (req, res, next) => {
       // chunk log, which never saw the pause-time stamp applied to the in-process
       // contentParts — stamping inside abortJob (not after) means the LIVE client
       // gets the question too, not just the saved message on reload.
-      const initialResolvedAskUserQuestions = job.metadata?.resolvedAskUserQuestions;
       const agentsCfg = req.config?.endpoints?.agents;
-      const shouldPruneCheckpoint =
-        isHITLEnabled(agentsCfg?.toolApproval) ||
-        job.metadata?.pendingAction != null ||
-        initialResolvedAskUserQuestions?.length > 0;
+      const shouldPruneCheckpoint = shouldPruneAgentCheckpoint(
+        job.metadata,
+        agentsCfg?.toolApproval,
+      );
       const checkpointNamespace =
         typeof job.metadata?.checkpointNamespace === 'string'
           ? job.metadata.checkpointNamespace

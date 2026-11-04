@@ -82,7 +82,9 @@ test.describe('scheduled chat execution', () => {
    * where a broken loopback URL, a rejected fire token, or a lost schedule identity
    * surfaces. The smoke spec only proves the card renders.
    */
-  test('Run Now generates a conversation and records it on the schedule', async ({ page }) => {
+  test('Run Now generates a chat and continued replies appear without navigation', async ({
+    page,
+  }) => {
     test.setTimeout(120000);
     await page.goto('/c/new', { timeout: 15000 });
     const token = await getAccessToken(page);
@@ -121,6 +123,35 @@ test.describe('scheduled chat execution', () => {
     await expect(page.getByTestId('messages-view')).toContainText(replyText(label), {
       timeout: 20000,
     });
+
+    const panelButton = page.getByRole('button', { name: 'Scheduled chats' });
+    if ((await panelButton.getAttribute('aria-pressed')) === 'true') {
+      await panelButton.click();
+    }
+    await expect(page.getByRole('region', { name: 'Scheduled chats' })).not.toBeVisible();
+    const composer = page.getByTestId('text-input');
+    await composer.fill('Keep this draft');
+    const followupLabel = `continued-${Date.now()}`;
+    const followup = await createSchedule(
+      page,
+      token,
+      scheduleBody(agent.id, {
+        target: 'continue',
+        conversationId,
+        prompt: replyPrompt(followupLabel),
+      }),
+    );
+    await requestJson<RunNowResult>(page, {
+      path: `/api/schedules/${followup.id}/run`,
+      token,
+      method: 'POST',
+    });
+
+    // No navigation or reload: an already-open chat must discover the new turn.
+    await expect(page.getByTestId('messages-view')).toContainText(replyText(followupLabel), {
+      timeout: 90000,
+    });
+    await expect(composer).toHaveValue('Keep this draft');
   });
 
   /**

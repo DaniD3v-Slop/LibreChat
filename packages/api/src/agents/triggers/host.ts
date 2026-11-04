@@ -121,7 +121,7 @@ export interface AgentTriggerFireResult {
   generationCreatedAt?: number;
 }
 
-export interface AgentTriggerSteerResult {
+export interface AgentTriggerQueuedSteerResult {
   mode: 'steer';
   status: 'queued';
   conversationId: string;
@@ -133,6 +133,14 @@ export interface AgentTriggerSteerResult {
   settled?: boolean;
   leftover?: boolean;
 }
+
+export type AgentTriggerSteerResult =
+  | AgentTriggerQueuedSteerResult
+  | {
+      mode: 'steer';
+      status: 'skipped';
+      conversationId: string;
+    };
 
 export interface AgentTriggerContinueResult {
   mode: 'continue';
@@ -630,7 +638,7 @@ async function startRun(
       scope.abort();
       throw error;
     });
-    const run = envelope.mode === 'fire' ? envelope.run : undefined;
+    const run = envelope.run;
     const timezone = run?.timezone ?? resolvedTimezone;
     const url = mode === 'fire' ? fireUrl(baseUrl) : continueUrl(baseUrl);
     const fetcher: AgentTriggerFetch = deps.fetch ?? globalThis.fetch;
@@ -704,10 +712,11 @@ async function startRun(
                 ...(detachedCompletion == null ? {} : { internalCompletion: detachedCompletion }),
               },
             }),
-          ...(envelope.mode === 'fire' && {
+          ...((envelope.mode === 'fire' || run != null) && {
             agentTrigger: {
               version: envelope.version,
               deliveryId: envelope.deliveryId,
+              target: { agentId: envelope.target.agentId },
               event: {
                 id: envelope.event.id,
                 type: envelope.event.type,
@@ -719,12 +728,14 @@ async function startRun(
               }),
             },
           }),
-          ...(run?.conversationId != null && {
-            newConversationId: run.conversationId,
-          }),
-          ...(run?.chatProjectId != null && {
-            chatProjectId: run.chatProjectId,
-          }),
+          ...(envelope.mode === 'fire' &&
+            run?.conversationId != null && {
+              newConversationId: run.conversationId,
+            }),
+          ...(envelope.mode === 'fire' &&
+            run?.chatProjectId != null && {
+              chatProjectId: run.chatProjectId,
+            }),
           ...(run?.files != null && { files: run.files }),
           ...(typeof timezone === 'string' && timezone.trim().length > 0
             ? { timezone: timezone.trim() }
@@ -970,6 +981,21 @@ async function steer(
           clientSteerId: context.idempotencyKey,
           preempt: envelope.target.preempt === true,
           generationProtocolVersion: 2,
+          ...(envelope.run?.files != null && { files: envelope.run.files }),
+          ...(envelope.run != null && {
+            agentTrigger: {
+              version: envelope.version,
+              deliveryId: envelope.deliveryId,
+              target: { agentId: envelope.target.agentId },
+              event: {
+                id: envelope.event.id,
+                type: envelope.event.type,
+                occurredAt: envelope.event.occurredAt,
+                source: envelope.event.source,
+              },
+              ...(envelope.run.metadata !== undefined && { metadata: envelope.run.metadata }),
+            },
+          }),
         }),
       });
     } catch (error) {
@@ -1010,6 +1036,13 @@ async function steer(
     const payload = parseJson(boundedBody.text);
     if (response.status !== 202) {
       const responseCode = errorCode(payload);
+      if (
+        envelope.event.source.type === 'schedule' &&
+        envelope.event.type === 'schedule.occurrence' &&
+        (responseCode === 'NO_ACTIVE_RUN' || responseCode === 'RUN_REPLACED')
+      ) {
+        return { mode: 'steer', status: 'skipped', conversationId: envelope.target.conversationId };
+      }
       const routeUnavailable = response.status === 404 && responseCode == null;
       const code = routeUnavailable
         ? 'STEER_ADMISSION_UNAVAILABLE'

@@ -22,6 +22,12 @@ const {
   buildWebSearchContext,
   DELETE_MEMORY_TOOL_NAME,
   createAskUserQuestionTool,
+  createScheduleTool,
+  standardCache,
+  getApprovalTtlMs,
+  expandScheduleToolNames,
+  isScheduleToolName,
+  GenerationJobManager,
   ASK_USER_QUESTION_TOOL_NAME,
   resolveWebSearchSSRFAgents,
   buildWebSearchDynamicContext,
@@ -351,7 +357,7 @@ const loadTools = async ({
   const serverNameAliases = buildServerNameAliases(collisionAudit.names);
   const shadowedServers = findShadowedServerNames(collisionAudit.names);
 
-  for (const tool of tools) {
+  for (const tool of expandScheduleToolNames(tools)) {
     /** `loadTools` is the shared boundary for every runtime that equips these
      *  tools — agents, and the Assistants required-action flow via
      *  `processRequiredActions`, which never passes through the agent capability
@@ -479,6 +485,21 @@ const loadTools = async ({
           logger,
         });
       };
+      continue;
+    } else if (isScheduleToolName(tool)) {
+      requestedTools[tool] = async () =>
+        createScheduleTool(tool, {
+          req: options.req,
+          agentId: agent?.id,
+          getRoleByName,
+          getConversation: require('~/models').getConvo,
+          getGenerationJob: (id) => GenerationJobManager.getJob(id),
+          handlers: require('~/server/services/Schedules/handlers'),
+          revisions: standardCache(
+            'schedule-tool-revisions',
+            getApprovalTtlMs(options.req.config?.endpoints?.agents?.checkpointer),
+          ),
+        });
       continue;
     } else if (tool === ASK_USER_QUESTION_TOOL_NAME) {
       requestedTools[tool] = async () => createAskUserQuestionTool();

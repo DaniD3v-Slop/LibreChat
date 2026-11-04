@@ -4,7 +4,7 @@ import { createAgentContinuationResolver } from './continuation';
 
 function envelope(options: {
   sourceId: string;
-  sourceType?: 'internal' | 'webhook';
+  sourceType?: 'internal' | 'webhook' | 'schedule';
   binding?: boolean;
 }): AgentContinueTriggerEnvelope {
   return {
@@ -79,4 +79,23 @@ describe('agent continuation admission', () => {
     expect(eventActor).not.toHaveBeenCalled();
     expect(internal).not.toHaveBeenCalled();
   });
+});
+
+it('routes schedule continuations only through the schedule adapter', async () => {
+  const schedule = jest.fn(async () => ({ status: 'settled' as const }));
+  const internal = jest.fn();
+  const eventActor = jest.fn();
+  const resolve = createAgentContinuationResolver({
+    schedule,
+    eventActor,
+    internalSources: new Map([['schedule-1', internal]]),
+  });
+  await expect(
+    resolve(envelope({ sourceId: 'schedule-1', sourceType: 'schedule' }), {
+      idempotencyKey: 'delivery-1',
+    }),
+  ).resolves.toEqual({ status: 'settled' });
+  expect(schedule).toHaveBeenCalledTimes(1);
+  expect(internal).not.toHaveBeenCalled();
+  expect(eventActor).not.toHaveBeenCalled();
 });

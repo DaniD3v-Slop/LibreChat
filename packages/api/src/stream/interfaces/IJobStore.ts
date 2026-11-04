@@ -255,6 +255,8 @@ export interface SerializableJobData {
   scheduledFor?: string;
   scheduleConfigRevision?: number;
   scheduleManual?: boolean;
+  /** A trusted schedule injected instructions into this generation. */
+  scheduleSteered?: boolean;
   /** Terminal outcome evidence retained when the schedule row could not be updated. */
   scheduleOutcome?: 'success' | 'error' | 'interrupted' | 'skipped_balance';
   scheduleOutcomeError?: string;
@@ -473,6 +475,7 @@ export type JobMetadataPatch = Partial<
     | 'scheduledFor'
     | 'scheduleConfigRevision'
     | 'scheduleManual'
+    | 'scheduleSteered'
     | 'scheduleOutcome'
     | 'scheduleOutcomeError'
     | 'preserveForScheduleReconcile'

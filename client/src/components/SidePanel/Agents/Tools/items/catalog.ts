@@ -163,6 +163,19 @@ export function buildCatalog(inputs: BuildCatalogInputs): AgentItem[] {
     });
   }
 
+  if (
+    enabled.has(AgentCapabilities.schedule_chat) &&
+    inputs.regularTools.some((plugin) => plugin.pluginKey === 'schedule_chat')
+  ) {
+    items.push({
+      kind: 'builtin',
+      id: 'schedule_chat',
+      iconKey: 'schedule_chat',
+      name: 'com_ui_schedule_chat',
+      description: 'com_agents_schedule_chat_info',
+    });
+  }
+
   if (inputs.showMemory) {
     items.push({
       kind: 'builtin',
@@ -195,7 +208,7 @@ export function buildCatalog(inputs: BuildCatalogInputs): AgentItem[] {
 
   if (enabled.has(AgentCapabilities.tools)) {
     for (const plugin of inputs.regularTools) {
-      if (plugin.pluginKey === 'ask_user_question') {
+      if (plugin.pluginKey === 'ask_user_question' || plugin.pluginKey === 'schedule_chat') {
         continue; // surfaced as a builtin above — don't double-list as a plugin
       }
       items.push({

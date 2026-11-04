@@ -7,6 +7,8 @@ import {
   scheduleJitterMs,
   cadenceIntervalMinutes,
   isValidCronExpression,
+  exhaustedReason,
+  isValidOnceAt,
   SCHEDULE_JITTER_WINDOW_MS,
 } from './cadence';
 
@@ -460,5 +462,67 @@ describe('cron cadence', () => {
     expect(isValidCronExpression('0 0 1 * *')).toBe(true);
     expect(isValidCronExpression('nonsense')).toBe(false);
     expect(isValidCronExpression('99 * * * *')).toBe(false);
+  });
+});
+
+describe('one-time cadence', () => {
+  const once = (at: string): TScheduleCadence => ({ frequency: 'once', at });
+
+  it('fires once at the wall-clock time in the schedule zone', () => {
+    const next = computeNextRunAt({
+      cadence: once('2026-12-24T18:30'),
+      timezone: 'Europe/Vienna',
+      scheduleId: 'sched-once',
+      after: new Date('2026-12-01T00:00:00Z'),
+    });
+    expect(next?.toISOString()).toBe('2026-12-24T17:30:00.000Z');
+  });
+
+  it('has no occurrence at or after its exact instant', () => {
+    const fired = new Date('2026-12-24T17:30:00Z');
+    expect(
+      computeNextRunAt({
+        cadence: once('2026-12-24T18:30'),
+        timezone: 'Europe/Vienna',
+        scheduleId: 'sched-once',
+        after: new Date(fired),
+      }),
+    ).toBeNull();
+  });
+
+  it('expires immediately after its exact instant, within the recurring jitter window', () => {
+    const scheduleId = 'sched-once-jitter';
+    const jitter = scheduleJitterMs(scheduleId);
+    const instant = new Date('2026-12-24T17:30:00Z').getTime();
+    const next = computeNextRunAt({
+      cadence: once('2026-12-24T18:30'),
+      timezone: 'Europe/Vienna',
+      scheduleId,
+      after: new Date(instant + jitter - 1),
+    });
+    expect(next).toBeNull();
+  });
+
+  it('previews exactly one run', () => {
+    const runs = nextRunInstants(once('2099-01-01T09:00'), NEW_YORK, 5);
+    expect(runs.map((run) => wallClock(run, NEW_YORK))).toEqual(['Thu 2099-01-01 09:00']);
+  });
+
+  it('is never rejected by an interval floor', () => {
+    expect(cadenceIntervalMinutes(once('2099-01-01T09:00'), NEW_YORK)).toBe(Infinity);
+  });
+
+  it('accepts only real calendar minutes', () => {
+    expect(isValidOnceAt('2028-02-29T23:59')).toBe(true);
+    expect(isValidOnceAt('2027-02-29T10:00')).toBe(false);
+    expect(isValidOnceAt('2026-02-30T10:00')).toBe(false);
+    expect(isValidOnceAt('2026-01-01T24:00')).toBe(false);
+    expect(isValidOnceAt('2026-01-01T10:60')).toBe(false);
+    expect(isValidOnceAt('2026-01-01 10:00')).toBe(false);
+  });
+
+  it('names the reason a schedule with no next run stopped', () => {
+    expect(exhaustedReason(once('2026-01-01T00:00'))).toBe('expired');
+    expect(exhaustedReason(cronCadence('0 9 * * *'))).toBe('invalid_schedule');
   });
 });

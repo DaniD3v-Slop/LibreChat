@@ -47,6 +47,7 @@ function getService() {
     // Chat projects are user-owned, so this scoped read is both the existence and the
     // authorization check the fire-time destination precheck needs.
     getChatProject: (userId, projectId) => methods.getChatProject(userId, projectId),
+    getConversation: methods.getConvo,
     // Reuse the merged trigger/deletion admission fence. A schedule fire and every
     // generic trigger now fail closed on the same durable principal state.
     isUserDeleting,

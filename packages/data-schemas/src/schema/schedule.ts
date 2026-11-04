@@ -1,5 +1,9 @@
 import { Schema } from 'mongoose';
-import { SCHEDULE_CRON_MAX_LENGTH } from 'librechat-data-provider';
+import {
+  SCHEDULE_CRON_MAX_LENGTH,
+  SCHEDULE_ONCE_AT_PATTERN,
+  scheduleTargets,
+} from 'librechat-data-provider';
 import type { IScheduleDocument } from '~/types/schedule';
 
 /** `cadence` is a nested path rather than a subdocument, so a validator on
@@ -11,7 +15,15 @@ interface CadenceValidatorDocument {
 }
 
 function isStructuredCadence(this: CadenceValidatorDocument): boolean {
-  return this.cadence?.frequency !== 'cron';
+  return !isCronCadence.call(this) && !isOnceCadence.call(this);
+}
+
+function isCronCadence(this: CadenceValidatorDocument): boolean {
+  return this.cadence?.frequency === 'cron';
+}
+
+function isOnceCadence(this: CadenceValidatorDocument): boolean {
+  return this.cadence?.frequency === 'once';
 }
 
 const scheduleSchema: Schema<IScheduleDocument> = new Schema(
@@ -36,6 +48,10 @@ const scheduleSchema: Schema<IScheduleDocument> = new Schema(
       required: true,
       maxlength: 256,
     },
+    description: {
+      type: String,
+      maxlength: 2000,
+    },
     prompt: {
       type: String,
       required: true,
@@ -48,7 +64,7 @@ const scheduleSchema: Schema<IScheduleDocument> = new Schema(
     cadence: {
       frequency: {
         type: String,
-        enum: ['hourly', 'daily', 'weekdays', 'weekly', 'cron'],
+        enum: ['hourly', 'daily', 'weekdays', 'weekly', 'cron', 'once'],
         required: true,
       },
       /**
@@ -78,9 +94,14 @@ const scheduleSchema: Schema<IScheduleDocument> = new Schema(
         /** Mirrors the zod gate, so a methods-layer writer bypassing the handlers
          *  cannot persist an expression the engine then refuses to compile. */
         maxlength: SCHEDULE_CRON_MAX_LENGTH,
-        required: function (this: CadenceValidatorDocument) {
-          return !isStructuredCadence.call(this);
-        },
+        required: isCronCadence,
+      },
+      /** A one-time row's wall-clock instant in `timezone`; see `onceCadenceSchema`. */
+      at: {
+        type: String,
+        default: undefined,
+        match: SCHEDULE_ONCE_AT_PATTERN,
+        required: isOnceCadence,
       },
     },
     timezone: {
@@ -89,9 +110,20 @@ const scheduleSchema: Schema<IScheduleDocument> = new Schema(
     },
     target: {
       type: String,
-      enum: ['new'],
+      enum: scheduleTargets,
       default: 'new',
       required: true,
+    },
+    conversationId: {
+      type: String,
+      default: undefined,
+      required: function (this: IScheduleDocument) {
+        return this.target === 'continue' || this.target === 'steer';
+      },
+    },
+    /** Creation conversation retained for project-less tool visibility. */
+    originConversationId: {
+      type: String,
     },
     chatProjectId: {
       type: String,
@@ -121,6 +153,8 @@ const scheduleSchema: Schema<IScheduleDocument> = new Schema(
         'too_many_failures',
         'agent_deleted',
         'invalid_schedule',
+        'completed',
+        'expired',
         'permission_revoked',
         'insufficient_balance',
         'project_deleted',

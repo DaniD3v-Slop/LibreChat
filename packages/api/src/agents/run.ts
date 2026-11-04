@@ -79,6 +79,12 @@ import {
   stripBackgroundFromToolDefinitions,
 } from '~/agents/background';
 import {
+  resolveToolApprovalPolicy,
+  healToolApprovalPolicy,
+  exemptAskUserQuestionFromApproval,
+  exemptScheduleReadsFromApproval,
+} from '~/agents/hitl/policy';
+import {
   createSubagentWakeupHandleHook,
   agentUsesSubagentCompletionWakeups,
   usesSubagentCompletionWakeups,
@@ -95,11 +101,6 @@ import {
   isSteerTerminalContinuationSupported,
 } from '~/agents/steering/runtime';
 import {
-  resolveToolApprovalPolicy,
-  healToolApprovalPolicy,
-  exemptAskUserQuestionFromApproval,
-} from '~/agents/hitl/policy';
-import {
   ASK_USER_QUESTION_TOOL_NAME,
   createAskUserQuestionTool,
 } from '~/agents/hitl/askUserQuestionTool';
@@ -115,10 +116,12 @@ import { extractDefaultParams, resolveReasoningParams } from '~/endpoints/openai
 import { getLLMConfig as getAnthropicLLMConfig } from '~/endpoints/anthropic/llm';
 import { CREATE_FILE_TOOL_NAME, EDIT_FILE_TOOL_NAME } from '~/agents/tools';
 import { buildAgentInitialToolSessions } from '~/agents/codeFilesSession';
+import { agentGraphRequestsScheduleChat } from '~/agents/hitl/admission';
 import { getDirectDispatcher, getProxyDispatcher } from '~/utils/proxy';
 import { getAzureCredentials, constructAzureURL } from '~/utils/azure';
 import { getBuiltInBaseURL } from '~/endpoints/openai/initialize';
 import { getProviderConfig } from '~/endpoints/config/providers';
+import { SCHEDULE_WRITE_TOOL_NAMES } from '~/agents/schedule';
 import { buildToolApprovalHooks } from '~/agents/hitl/hooks';
 import { getAgentCheckpointer } from '~/agents/checkpointer';
 import { getPluginHookSource } from '~/agents/hooks/source';
@@ -2119,6 +2122,7 @@ export async function createRun({
   eventActorCheckpointing = false,
   hitlCapable = false,
   resolvedToolApprovalHooks,
+  scheduleChatApprovalHook,
   toolInputValidationErrors,
   sessionStartSource,
   streaming = true,
@@ -2259,6 +2263,8 @@ export async function createRun({
    * Reuse them here so a context-aware factory is evaluated exactly once for the run.
    */
   resolvedToolApprovalHooks?: readonly ResolvedToolApprovalHook[];
+  /** Fresh server-owned generation check before schedule creation may request approval. */
+  scheduleChatApprovalHook?: HookCallback<'PreToolUse'>;
   /** Plugin-hook SessionStart lifecycle source: 'startup' (default) or 'resume' on HITL-rebuild paths. */
   sessionStartSource?: string;
   /** Request-scoped tool input failures consumed by the completion handler. */
@@ -2697,6 +2703,7 @@ export async function createRun({
   const toolApprovalPolicy = resolveToolApprovalPolicy({
     endpoint: agentsEndpointConfig?.toolApproval,
     attachedCodeEnvironment: attachedCodeEnvironmentAgentIds.size > 0,
+    scheduleChat: agentGraphRequestsScheduleChat(agents),
   });
   // Every caller needs the policy hooks, including API-key ingresses. Only
   // AgentClient supports pause/resume; the SDK blocks `ask` without HITL enabled.
@@ -2710,7 +2717,7 @@ export async function createRun({
   );
   const effectiveToolApprovalPolicy = () =>
     exemptAskUserQuestionFromApproval(
-      healToolApprovalPolicy(toolApprovalPolicy, mcpToolAliases),
+      exemptScheduleReadsFromApproval(healToolApprovalPolicy(toolApprovalPolicy, mcpToolAliases)),
       ASK_USER_QUESTION_TOOL_NAME,
     );
   const nativeEditFileAgentIds = collectNativeEditFileAgentIds(agents);
@@ -2738,6 +2745,15 @@ export async function createRun({
           tenantId: tenantId ?? user?.tenantId,
           appConfig,
         })),
+      ...(scheduleChatApprovalHook == null
+        ? []
+        : [
+            {
+              hook: scheduleChatApprovalHook,
+              matcher:
+                '^(create_schedule|list_schedules|get_schedule|update_schedule|delete_schedule)$',
+            },
+          ]),
       ...(attachedCodeEnvironmentAgentIds.size > 0
         ? [
             {
@@ -2939,6 +2955,7 @@ export async function createRun({
         Constants.EXECUTE_CODE,
         Constants.BASH_TOOL,
         ASK_USER_QUESTION_TOOL_NAME,
+        ...SCHEDULE_WRITE_TOOL_NAMES,
         /**
          * Background-capable tools: eager execution could launch the detached
          * task with speculative/partial args before the final tool call, and a

@@ -1047,3 +1047,188 @@ it('does not enqueue when Run Now is cancelled during final claim validation', a
   expect(deps.enqueueTrigger).not.toHaveBeenCalled();
   expect(methods.recordRunOutcome).not.toHaveBeenCalled();
 });
+
+describe('fireSchedule with a one-time cadence', () => {
+  /** Its only occurrence, a minute ago, so there is no next run after this fire. */
+  const onceSchedule = () => {
+    const at = new Date(Date.now() - 10 * 60_000);
+    const pad = (value: number) => String(value).padStart(2, '0');
+    const local = `${at.getUTCFullYear()}-${pad(at.getUTCMonth() + 1)}-${pad(at.getUTCDate())}T${pad(at.getUTCHours())}:${pad(at.getUTCMinutes())}`;
+    return makeSchedule({ cadence: { frequency: 'once', at: local }, timezone: 'UTC' });
+  };
+  const COMPLETED_GUARD = ['sched-1', 'completed', 'ct-1', undefined, { enabled: true }];
+
+  it('dispatches its final occurrence, then completes instead of disabling as invalid', async () => {
+    const { methods } = makeMethods();
+    mockFetch(async () => okResponse());
+
+    const result = await fireSchedule(makeDeps(methods), onceSchedule(), LIMITS, dueAt());
+
+    expect(result.fired).toBe(true);
+    expect(methods.advanceSchedule).toHaveBeenCalledWith('sched-1', null, expect.any(Date), 'ct-1');
+    expect(methods.disableSchedule).toHaveBeenCalledTimes(1);
+    expect(methods.disableSchedule).toHaveBeenCalledWith(...COMPLETED_GUARD);
+  });
+
+  it('completes when its only occurrence is skipped', async () => {
+    const { methods, runs } = makeMethods();
+    runs.set('sched-1:prior', { status: 'started' });
+
+    const result = await fireSchedule(makeDeps(methods), onceSchedule(), LIMITS, dueAt());
+
+    expect(result.skipped).toBe('overlap');
+    expect(methods.disableSchedule).toHaveBeenCalledWith(...COMPLETED_GUARD);
+  });
+
+  it('keeps a more specific disable reason that landed first', async () => {
+    const { methods, calls } = makeMethods();
+    const deps = makeDeps(methods, { agentAccess: async () => 'forbidden' });
+
+    await fireSchedule(deps, onceSchedule(), LIMITS, dueAt());
+
+    // The completion write is guarded on `enabled: true`, so it cannot overwrite this.
+    expect(calls.disable).toEqual(['permission_revoked', 'completed']);
+    expect(methods.disableSchedule).toHaveBeenLastCalledWith(...COMPLETED_GUARD);
+  });
+
+  it('leaves a one-time schedule untouched on Run now', async () => {
+    const { methods } = makeMethods();
+    mockFetch(async () => okResponse());
+
+    const result = await fireSchedule(makeDeps(methods), onceSchedule(), LIMITS, dueAt(), {
+      manual: true,
+    });
+
+    expect(result.fired).toBe(true);
+    expect(methods.advanceSchedule).not.toHaveBeenCalled();
+    expect(methods.disableSchedule).not.toHaveBeenCalled();
+  });
+});
+
+describe('existing-conversation schedule delivery', () => {
+  const conversation = { agent_id: 'agent-1', tenantId: 't1', chatProjectId: 'project-1' };
+
+  it('continues the originating conversation with trusted context and attachments', async () => {
+    const { methods } = makeMethods();
+    const enqueueTrigger = jest.fn(async () => undefined);
+    const deps = makeDeps(methods, {
+      getConversation: async () => conversation,
+      projectAccess: async () => 'ok',
+      resolveFiles: async () => [{ file_id: 'file-1' }],
+      enqueueTrigger,
+    });
+    const result = await fireSchedule(
+      deps,
+      makeSchedule({
+        target: 'continue',
+        conversationId: 'origin-chat',
+        file_ids: ['file-1'],
+        chatProjectId: 'project-1',
+      }),
+      LIMITS,
+      dueAt(),
+    );
+    expect(result).toMatchObject({ fired: true, conversationId: 'origin-chat' });
+    expect(enqueueTrigger).toHaveBeenCalledWith(
+      expect.objectContaining({
+        mode: 'continue',
+        target: expect.objectContaining({ conversationId: 'origin-chat', agentId: 'agent-1' }),
+        run: expect.objectContaining({
+          files: [{ file_id: 'file-1' }],
+          metadata: { manual: false },
+        }),
+        event: expect.objectContaining({
+          type: 'schedule.occurrence',
+          source: { id: 'sched-1', type: 'schedule' },
+        }),
+      }),
+      { orderingKey: 'sched-1' },
+    );
+  });
+
+  it('pins steer retries to the observed active generation', async () => {
+    const { methods } = makeMethods();
+    const enqueueTrigger = jest.fn(async () => undefined);
+    const deps = makeDeps(methods, {
+      getConversation: async () => conversation,
+      projectAccess: async () => 'ok',
+      getJobStatus: async () => ({ status: 'running', createdAt: 12345 }),
+      enqueueTrigger,
+    });
+    const result = await fireSchedule(
+      deps,
+      makeSchedule({
+        target: 'steer',
+        conversationId: 'origin-chat',
+        chatProjectId: 'project-1',
+      }),
+      LIMITS,
+      dueAt(),
+    );
+    expect(result).toMatchObject({ fired: true, conversationId: 'origin-chat' });
+    expect(enqueueTrigger).toHaveBeenCalledWith(
+      expect.objectContaining({
+        mode: 'steer',
+        target: { conversationId: 'origin-chat', agentId: 'agent-1', generationCreatedAt: 12345 },
+      }),
+      expect.anything(),
+    );
+  });
+
+  it('records an idle steer as skipped without reserving a generation', async () => {
+    const { methods } = makeMethods();
+    const deps = makeDeps(methods, {
+      getConversation: async () => conversation,
+      projectAccess: async () => 'ok',
+    });
+    const result = await fireSchedule(
+      deps,
+      makeSchedule({
+        target: 'steer',
+        conversationId: 'origin-chat',
+        chatProjectId: 'project-1',
+      }),
+      LIMITS,
+      dueAt(),
+    );
+    expect(result).toMatchObject({ fired: false, skipped: 'inactive' });
+    expect(methods.recordSkippedRun).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'skipped_inactive' }),
+    );
+    expect(methods.reserveStartedRun).not.toHaveBeenCalled();
+    expect(deps.enqueueTrigger).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    null,
+    { ...conversation, agent_id: 'another-agent' },
+    { ...conversation, tenantId: 'other-tenant' },
+  ])('refuses a missing or changed origin conversation', async (stored) => {
+    const { methods } = makeMethods();
+    const deps = makeDeps(methods, { getConversation: async () => stored });
+    const result = await fireSchedule(
+      deps,
+      makeSchedule({ target: 'continue', conversationId: 'origin-chat' }),
+      LIMITS,
+      dueAt(),
+    );
+    expect(result).toMatchObject({ fired: false, skipped: 'permission_revoked' });
+    expect(deps.enqueueTrigger).not.toHaveBeenCalled();
+  });
+
+  it('refuses an operator pin that would move an existing conversation', async () => {
+    const { methods } = makeMethods();
+    const deps = makeDeps(methods, {
+      getConversation: async () => conversation,
+      getLimits: async () => ({ ...LIMITS, requireProject: true, projectId: 'different-project' }),
+    });
+    const result = await fireSchedule(
+      deps,
+      makeSchedule({ target: 'continue', conversationId: 'origin-chat' }),
+      LIMITS,
+      dueAt(),
+    );
+    expect(result).toMatchObject({ fired: false, skipped: 'project_required' });
+    expect(deps.enqueueTrigger).not.toHaveBeenCalled();
+  });
+});

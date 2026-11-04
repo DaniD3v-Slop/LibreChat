@@ -20,6 +20,7 @@ import type { CodeEnvironmentConfig, CodeExecutionContext } from '~/agents/execu
 import type { CodeCapabilityConfigLoader } from '~/code/capabilities';
 import type { MCPToolAlias, ToolDefinition } from './classification';
 import { resolveJsonSchemaRefs, normalizeJsonSchema, sanitizeGeminiSchema } from '~/mcp/zod';
+import { expandScheduleToolNames } from '~/agents/schedule';
 import { buildToolClassification } from './classification';
 import { getToolDefinition } from './registry/definitions';
 import { toolkitExpansion } from './toolkits/mapping';
@@ -183,7 +184,7 @@ export async function loadToolDefinitions(
   let expectedMCPToolCount = 0;
   let resolvedMCPToolCount = 0;
 
-  for (const toolName of tools) {
+  for (const toolName of expandScheduleToolNames(tools)) {
     if (isActionTool(toolName)) {
       actionToolNames.push(toolName);
       continue;

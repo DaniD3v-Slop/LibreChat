@@ -58,6 +58,7 @@ const scheduleRunSchema: Schema<IScheduleRunDocument> = new Schema(
         'interrupted',
         'skipped_overlap',
         'skipped_balance',
+        'skipped_inactive',
       ],
       required: true,
     },
