@@ -30,10 +30,15 @@ const endpointsConfig: TEndpointsConfig = {
 };
 
 describe('schedule_chat capability', () => {
-  it('requires explicit opt-in through the capabilities list', () => {
-    expect(defaultAgentCapabilities).not.toContain(AgentCapabilities.schedule_chat);
-    expect(agentsEndpointSchema.parse({ capabilities: ['schedule_chat'] }).capabilities).toEqual([
+  it('is available by default while respecting explicit capability restrictions', () => {
+    expect(defaultAgentCapabilities).toContain(AgentCapabilities.schedule_chat);
+    expect(agentsEndpointSchema.parse(undefined).capabilities).toContain(
       AgentCapabilities.schedule_chat,
+    );
+    expect(agentsEndpointSchema.parse({}).capabilities).toContain(AgentCapabilities.schedule_chat);
+    expect(agentsEndpointSchema.parse({ capabilities: [] }).capabilities).toEqual([]);
+    expect(agentsEndpointSchema.parse({ capabilities: ['file_search'] }).capabilities).toEqual([
+      AgentCapabilities.file_search,
     ]);
   });
 });
