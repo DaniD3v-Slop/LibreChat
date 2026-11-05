@@ -1,8 +1,10 @@
 # Agent scheduling tools
 
-The optional `schedule_chat` capability and saved agent setting enable five native tools:
-`create_schedule`, `list_schedules`, `get_schedule`, `update_schedule`, and `delete_schedule`.
-The group is off by default and uses the existing native approval flow and Schedules list.
+The `schedule_chat` capability is available by default. With Schedules enabled, select the
+Schedules tool group for an agent to enable `create_schedule`, `list_schedules`, `get_schedule`,
+`update_schedule`, and `delete_schedule`. Tools are not added to agents automatically. An explicit
+endpoint capabilities list can exclude scheduling. The tools use the existing native approval
+flow and Schedules list.
 
 ## Scope and input
 
