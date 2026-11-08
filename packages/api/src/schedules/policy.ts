@@ -1,7 +1,8 @@
 export interface ScheduleLimits {
   /** Feature-level switch: when false the engine claims/fires nothing. */
   enabled: boolean;
-  maxPerUser: number;
+  /** Omitted means unlimited; an explicit zero prevents creation. */
+  maxPerUser?: number;
   minIntervalMinutes: number;
   autoDisableAfterFailures: number;
   /** Maximum claimed occurrences concurrently passing readiness admission per replica. */
@@ -22,7 +23,6 @@ export interface ScheduleLimits {
 
 export const DEFAULT_SCHEDULE_LIMITS: ScheduleLimits = {
   enabled: true,
-  maxPerUser: 10,
   minIntervalMinutes: 60,
   autoDisableAfterFailures: 5,
   admissionConcurrency: 20,

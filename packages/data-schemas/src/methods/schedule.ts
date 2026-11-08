@@ -221,7 +221,7 @@ export type ScheduleMethods = {
   createSchedule: (data: Partial<ISchedule>) => Promise<ISchedule>;
   createScheduleWithSlot: (
     data: Partial<ISchedule>,
-    maxPerUser: number,
+    maxPerUser?: number,
   ) => Promise<ISchedule | 'limit'>;
   updateScheduleById: (
     id: string,
@@ -419,40 +419,44 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
    * concurrent creates that pick the same slot collide (duplicate key) and one
    * retries the next free slot — no read-then-count window, no drift. Returns
    * 'limit' when all slots in [0, maxPerUser) are held by the user's live schedules.
+   * With no quota, inserts without a slot while preserving create idempotency.
    */
   async function createScheduleWithSlot(
     data: Partial<ISchedule>,
-    maxPerUser: number,
+    maxPerUser?: number,
   ): Promise<ISchedule | 'limit'> {
     const userId = data.user;
-    // Bound the retries by maxPerUser+1: each collision advances to a distinct
-    // slot, so a caller can lose at most (slots occupied) races before it either
-    // wins a free slot or finds every slot taken.
-    for (let attempt = 0; attempt <= maxPerUser; attempt++) {
-      const used = await Schedule()
-        .find({ user: userId, deleting: { $ne: true } })
-        .select('slot')
-        .lean<Array<{ slot?: number }>>();
-      const taken = new Set(
-        used.map((s) => s.slot).filter((s): s is number => typeof s === 'number'),
-      );
-      // Every live row consumes capacity, including legacy/internal rows created
-      // before the slot allocator existed. Slots remain the atomic collision key.
-      if (used.length >= maxPerUser) {
-        return 'limit';
-      }
-      let slot = 0;
-      while (taken.has(slot)) {
-        slot++;
-      }
-      if (slot >= maxPerUser) {
-        return 'limit';
+    // Unlimited creates need neither occupancy reads nor a quota slot. Finite
+    // quotas retain the unique-index guard and bounded collision retries.
+    const attempts = maxPerUser === undefined ? 1 : maxPerUser + 1;
+    for (let attempt = 0; attempt < attempts; attempt++) {
+      let slot: number | undefined;
+      if (maxPerUser !== undefined) {
+        const used = await Schedule()
+          .find({ user: userId, deleting: { $ne: true } })
+          .select('slot')
+          .lean<Array<{ slot?: number }>>();
+        const taken = new Set(
+          used.map((s) => s.slot).filter((s): s is number => typeof s === 'number'),
+        );
+        // Slotless rows created without a quota also consume capacity if an
+        // administrator later enables a finite quota.
+        if (used.length >= maxPerUser) {
+          return 'limit';
+        }
+        slot = 0;
+        while (taken.has(slot)) {
+          slot++;
+        }
+        if (slot >= maxPerUser) {
+          return 'limit';
+        }
       }
       try {
         const doc = await Schedule().create({ ...data, slot, deleting: false });
         return doc.toObject();
       } catch (error) {
-        if (isSlotConflict(error)) {
+        if (maxPerUser !== undefined && isSlotConflict(error)) {
           continue;
         }
         // A RETRY of a create whose first attempt already committed. Hand back the

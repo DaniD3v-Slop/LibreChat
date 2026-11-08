@@ -74,9 +74,10 @@ trigger semantics rather than a browser-selected historical branch. Steering com
 durable queue acceptance, not proof that a model acted on the instruction.
 
 One-shots have no cadence jitter and disable after dispatch. Their occurrence evidence survives
-for their own generation and approval resumes. Completed one-shots count toward the schedule
-limit until deleted. Normal scheduler polling can delay actual dispatch after the scheduled
-instant. Old schedules without origin metadata remain manageable through the normal UI; an
+for their own generation and approval resumes. There is no default schedule-count limit.
+Administrators can set `interface.schedules.maxPerUser`; completed one-shots count toward
+that configured limit until deleted. Normal scheduler polling can delay actual dispatch after
+the scheduled instant. Old schedules without origin metadata remain manageable through the normal UI; an
 unprojected chat cannot discover them through these tools without proof of its origin.
 
 # Unattended MCP support

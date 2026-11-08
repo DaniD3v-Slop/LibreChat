@@ -2376,6 +2376,7 @@ export const interfaceSchema = z
         z.object({
           use: z.boolean().optional(),
           create: z.boolean().optional(),
+          /** Omit for unlimited schedules; zero prevents creation. */
           maxPerUser: z.number().int().min(0).optional(),
           minIntervalMinutes: z.number().int().min(1).optional(),
           autoDisableAfterFailures: z.number().int().min(1).optional(),

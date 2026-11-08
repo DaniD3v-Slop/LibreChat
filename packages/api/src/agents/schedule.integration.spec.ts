@@ -203,6 +203,23 @@ async function setup(
 }
 
 describe('schedule tools through the shared CRUD handlers and MongoDB', () => {
+  it('creates more than ten schedules by default without quota reads', async () => {
+    const h = await setup();
+    const count = jest.spyOn(methods, 'countSchedulesByUser');
+    try {
+      const results = await Promise.all(
+        Array.from({ length: 11 }, (_, index) =>
+          h.invoke({ ...h.input, prompt: { text: 'Future follow-up' } }, `create-${index}`),
+        ),
+      );
+      expect(results.every((result) => typeof result.id === 'string')).toBe(true);
+      expect(await models.Schedule.countDocuments({ user: h.userId })).toBe(11);
+      expect(count).not.toHaveBeenCalled();
+    } finally {
+      count.mockRestore();
+    }
+  });
+
   it('scopes reused call IDs to the originating generation epoch', async () => {
     const h = await setup();
     const first = await h.invoke();

@@ -924,7 +924,10 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
     // Fail fast on an obvious over-limit BEFORE retaining attachments, so the common
     // case never clears an upload TTL it then can't use. The {user, slot} partial
     // unique index below is the atomic arbiter for the concurrent-create race.
-    if ((await deps.methods.countSchedulesByUser(user.id)) >= limits.maxPerUser) {
+    if (
+      limits.maxPerUser !== undefined &&
+      (await deps.methods.countSchedulesByUser(user.id)) >= limits.maxPerUser
+    ) {
       // A concurrent first attempt with this key can have landed between the replay
       // lookup above and this count — and can itself be what filled the last slot.
       // The retry must resolve to that row, not be refused for being at capacity.
