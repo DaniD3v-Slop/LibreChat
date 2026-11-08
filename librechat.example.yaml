@@ -222,7 +222,7 @@ interface:
   # schedules:
   #   use: true
   #   create: true
-  #   maxPerUser: 10
+  #   # Schedule count is unlimited unless maxPerUser is explicitly set.
   #   minIntervalMinutes: 60
   #   autoDisableAfterFailures: 5
   #   # Maximum occurrences concurrently passing readiness admission per replica (1-100).
