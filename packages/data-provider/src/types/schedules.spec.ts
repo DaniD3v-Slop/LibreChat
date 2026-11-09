@@ -18,6 +18,7 @@ import {
   getScheduleMCPDisabledReason,
   isScheduleMCPAuthorizationFailure,
   readScheduleMCPOutcomes,
+  projectScheduleMCPReceipt,
   scheduleMCPOutcomeSchema,
 } from './schedules';
 
@@ -383,4 +384,29 @@ it('carries description metadata without accepting body-provided origin', () => 
   expect(
     updateSchedulePayloadSchema.parse({ name: 'Edited', originConversationId: 'other' }),
   ).not.toHaveProperty('originConversationId');
+});
+
+it('preserves omitted activation fields in HTTP and model rename patches', () => {
+  expect(updateSchedulePayloadSchema.parse({ name: 'Renamed' })).toEqual({ name: 'Renamed' });
+  expect(updateScheduleToolSchema.parse({ id: 'sched-1', name: 'Renamed' })).toEqual({
+    id: 'sched-1',
+    name: 'Renamed',
+  });
+});
+
+it('preserves durable authorization denials when an inactive scheduled steer settles', () => {
+  const denied = {
+    server: 'Files',
+    status: 'mcp_reauth_required' as const,
+    reason: 'consent_revoked' as const,
+    recovery: 'authorize' as const,
+    automaticReplay: false as const,
+  };
+  expect(projectScheduleMCPReceipt({ status: 'skipped_inactive' })).toEqual({
+    status: 'skipped_inactive',
+  });
+  expect(projectScheduleMCPReceipt({ status: 'skipped_inactive' }, [denied])).toMatchObject({
+    status: 'error',
+    mcp: [denied],
+  });
 });

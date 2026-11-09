@@ -1,7 +1,7 @@
 import { z } from 'zod';
+import type { Schema } from './tools';
 import { scheduledMCPFailureReasonSchema } from './scheduleConsent';
 import { partialWithoutDefaults } from '../zod';
-import type { Schema } from './tools';
 
 /** Cadences the dialog builds from structured pickers (hour, minute, weekday). */
 export const scheduleStructuredFrequencies = ['hourly', 'daily', 'weekdays', 'weekly'] as const;
@@ -194,8 +194,7 @@ export type TGetScheduleToolInput = z.infer<typeof getScheduleToolSchema>;
 export const deleteScheduleToolSchema = getScheduleToolSchema;
 export type TDeleteScheduleToolInput = z.infer<typeof deleteScheduleToolSchema>;
 
-export const updateScheduleToolSchema = createScheduleToolSchema
-  .partial()
+export const updateScheduleToolSchema = partialWithoutDefaults(createScheduleToolSchema)
   .extend({ id: getScheduleToolSchema.shape.id, enabled: z.boolean().optional() })
   .strict()
   .refine(
@@ -459,7 +458,8 @@ export interface ScheduleMCPReceiptProjection {
     | 'requires_action'
     | 'interrupted'
     | 'skipped_balance'
-    | 'skipped_overlap';
+    | 'skipped_overlap'
+    | 'skipped_inactive';
   error?: string;
   mcp?: ScheduleMCPOutcome[];
 }

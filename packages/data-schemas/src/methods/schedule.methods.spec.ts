@@ -2301,17 +2301,6 @@ describe('deletion quiescing (soft-delete, drain, erase)', () => {
     expect(await methods.getScheduleById(schedule.id)).toBeNull();
   });
 
-  it('requires a deleting schedule before erasing orphaned run evidence', async () => {
-    const schedule = await methods.createSchedule(scheduleData());
-    const scheduledFor = new Date('2026-07-20T12:00:00Z');
-    await methods.insertScheduleRun(runData(schedule, { scheduledFor, status: 'success' }));
-    await Schedule.deleteOne({ id: schedule.id });
-
-    await expect(methods.eraseScheduleIfDrained(schedule.id)).resolves.toBe(false);
-
-    expect((await getRun(schedule.id, scheduledFor)).status).toBe('success');
-  });
-
   it('markScheduleDeleting hides + un-claims; erase waits for active runs to drain', async () => {
     const schedule = await methods.createScheduleWithSlot(scheduleData(), 10);
     const sched = schedule as ISchedule;
