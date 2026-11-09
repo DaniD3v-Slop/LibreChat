@@ -431,6 +431,7 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
     req.resolvedConversation = {
       user: user.id,
       conversationId: context.conversationId,
+      subagentThread: conversation.subagentThread,
       agent_id: conversation.agent_id ?? undefined,
       tenantId: conversation.tenantId ?? undefined,
       chatProjectId: conversation.chatProjectId ?? null,
@@ -634,6 +635,12 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
     }
     if (conversation.agent_id !== (payload.agent_id ?? existing?.agent_id)) {
       res.status(400).json({ error: 'Conversation does not use the scheduled agent' });
+      return false;
+    }
+    if (conversation.subagentThread != null) {
+      res
+        .status(400)
+        .json({ error: 'Read-only subagent conversations cannot be schedule targets' });
       return false;
     }
     const actualProject = conversation.chatProjectId ?? undefined;

@@ -365,6 +365,7 @@ export async function fireSchedule(
     if (
       existingConversation &&
       (origin == null ||
+        origin.subagentThread != null ||
         origin.agent_id !== schedule.agent_id ||
         (origin.tenantId ?? undefined) !== user.tenantId)
     ) {

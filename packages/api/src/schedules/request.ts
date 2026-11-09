@@ -1,3 +1,4 @@
+import type { TSubagentThreadLineage } from 'librechat-data-provider';
 import type { Response } from 'express';
 import type { ServerRequest } from '~/types/http';
 
@@ -13,6 +14,7 @@ export interface ScheduleToolRequest extends ServerRequest {
 }
 
 export interface ScheduleConversation {
+  subagentThread?: TSubagentThreadLineage;
   conversationId?: string;
   user?: string;
   agent_id?: string | null;

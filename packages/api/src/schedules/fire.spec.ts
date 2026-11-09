@@ -1115,6 +1115,45 @@ describe('fireSchedule with a one-time cadence', () => {
 describe('existing-conversation schedule delivery', () => {
   const conversation = { agent_id: 'agent-1', tenantId: 't1', chatProjectId: 'project-1' };
 
+  it.each(['continue', 'steer'] as const)(
+    'refuses a read-only subagent %s target before dispatch',
+    async (target) => {
+      const { methods, calls } = makeMethods();
+      const deps = makeDeps(methods, {
+        getConversation: async () => ({
+          ...conversation,
+          subagentThread: {
+            rootConversationId: 'root-chat',
+            parentConversationId: 'parent-chat',
+            parentMessageId: 'parent-message',
+            parentToolCallId: 'parent-call',
+            subagentType: 'worker',
+            subagentKind: 'agent' as const,
+            depth: 1,
+          },
+        }),
+        projectAccess: async () => 'ok',
+        getJobStatus: async () => ({ status: 'running', createdAt: 12345 }),
+      });
+
+      const result = await fireSchedule(
+        deps,
+        makeSchedule({
+          target,
+          conversationId: 'child-chat',
+          chatProjectId: 'project-1',
+        }),
+        LIMITS,
+        dueAt(),
+      );
+
+      expect(result).toMatchObject({ fired: false, skipped: 'permission_revoked' });
+      expect(calls.disable).toContain('permission_revoked');
+      expect(methods.reserveStartedRun).not.toHaveBeenCalled();
+      expect(deps.enqueueTrigger).not.toHaveBeenCalled();
+    },
+  );
+
   it('continues the originating conversation with trusted context and attachments', async () => {
     const { methods } = makeMethods();
     const enqueueTrigger = jest.fn(async () => undefined);

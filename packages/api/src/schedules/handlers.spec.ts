@@ -1958,3 +1958,85 @@ it.each([
     }
   },
 );
+
+describe('read-only subagent schedule targets', () => {
+  const conversation = {
+    user: 'user-1',
+    conversationId: 'child-chat',
+    tenantId: 't1',
+    agent_id: 'agent-1',
+    chatProjectId: 'project-1',
+    subagentThread: {
+      rootConversationId: 'root-chat',
+      parentConversationId: 'parent-chat',
+      parentMessageId: 'parent-message',
+      parentToolCallId: 'parent-call',
+      subagentType: 'worker',
+      subagentKind: 'agent' as const,
+      depth: 1,
+    },
+  };
+  function setup(target: 'continue' | 'steer') {
+    const deps = makeCreateDeps({
+      isUserDeleting: async () => false,
+      canUseProject: async () => true,
+      getConversation: jest.fn(async () => conversation),
+    });
+    jest.mocked(deps.methods.getScheduleById).mockResolvedValue(
+      fullScheduleDoc({
+        target,
+        conversationId: 'child-chat',
+        chatProjectId: 'project-1',
+      }),
+    );
+    const request = (body: object) =>
+      Object.assign(makeCreateReq(body), {
+        params: { id: 'sched-1' },
+        resolvedConversation: conversation,
+        scheduleToolContext: {
+          agentId: 'agent-1',
+          conversationId: 'child-chat',
+          projectId: 'project-1',
+        },
+      });
+    return { deps, request };
+  }
+  it.each([
+    ['createSchedule', 'continue'],
+    ['createSchedule', 'steer'],
+    ['updateSchedule', 'continue'],
+    ['updateSchedule', 'steer'],
+  ] as const)('%s refuses a read-only subagent target for %s', async (operation, target) => {
+    const { deps, request } = setup(target);
+    const { res, captured } = makeRes();
+
+    await createSchedulesHandlers(deps)[operation](
+      request(
+        operation === 'createSchedule'
+          ? { ...CREATE_BODY, target, conversationId: 'child-chat' }
+          : { prompt: 'Changed instruction' },
+      ),
+      res,
+    );
+
+    expect(captured.status).toBe(400);
+    expect(captured.body).toEqual({
+      error: 'Read-only subagent conversations cannot be schedule targets',
+    });
+    expect(deps.methods.createScheduleWithSlot).not.toHaveBeenCalled();
+    expect(deps.methods.updateScheduleById).not.toHaveBeenCalled();
+    expect(deps.getConversation).not.toHaveBeenCalled();
+  });
+  it.each(['continue', 'steer'] as const)(
+    'allows disabling an existing read-only subagent %s target',
+    async (target) => {
+      const { deps, request } = setup(target);
+      const { res } = makeRes();
+
+      await createSchedulesHandlers(deps).updateSchedule(request({ enabled: false }), res);
+
+      expect(deps.methods.updateScheduleById).toHaveBeenCalled();
+      expect(deps.getConversation).not.toHaveBeenCalled();
+    },
+  );
+});
