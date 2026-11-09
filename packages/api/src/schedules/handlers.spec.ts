@@ -1905,3 +1905,56 @@ describe('agent-tool scope boundaries', () => {
     );
   });
 });
+
+it.each([
+  { conversationTenant: 'tenant-request', status: 201 },
+  { conversationTenant: 't1', status: 403 },
+])(
+  'uses the authenticated request tenant for scoped schedule creation: $conversationTenant',
+  async ({ conversationTenant, status }) => {
+    const deps = makeCreateDeps({
+      isUserDeleting: async () => false,
+      canUseProject: async () => true,
+      getConversation: async () => ({
+        user: 'user-1',
+        conversationId: 'origin-tenant',
+        tenantId: conversationTenant,
+        agent_id: 'agent-1',
+        chatProjectId: 'project-tenant',
+      }),
+    });
+    jest
+      .mocked(deps.methods.getScheduleById)
+      .mockImplementation(
+        async () =>
+          (jest.mocked(deps.methods.createScheduleWithSlot).mock.calls[0]?.[0] as ISchedule) ??
+          null,
+      );
+    const req = Object.assign(makeCreateReq(), {
+      tenantId: 'tenant-request',
+      scheduleToolContext: {
+        agentId: 'agent-1',
+        conversationId: 'origin-tenant',
+        projectId: 'project-tenant',
+      },
+    });
+    const { res, captured } = makeRes();
+
+    await createSchedulesHandlers(deps).createSchedule(req, res);
+
+    expect(captured.status).toBe(status);
+    if (status === 201) {
+      expect(deps.methods.createScheduleWithSlot).toHaveBeenCalledWith(
+        expect.objectContaining({ tenantId: 'tenant-request' }),
+        expect.anything(),
+      );
+      expect(deps.preflightMCP).toHaveBeenCalledWith(
+        'agent-1',
+        expect.objectContaining({ tenantId: 'tenant-request' }),
+        expect.anything(),
+      );
+    } else {
+      expect(deps.methods.createScheduleWithSlot).not.toHaveBeenCalled();
+    }
+  },
+);

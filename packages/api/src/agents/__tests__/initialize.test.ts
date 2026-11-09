@@ -144,7 +144,6 @@ jest.mock('../../middleware/modelBoundContent', () => {
 import { initializeAgent } from '../initialize';
 import { primeResources } from '../resources';
 import { isFatalAgentInitializationError } from '../errors';
-import { canAgentGraphPause } from '../hitl/admission';
 
 const realUtils = jest.requireActual<typeof import('~/utils')>('~/utils');
 

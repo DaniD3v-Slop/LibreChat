@@ -112,6 +112,48 @@ function setup() {
 }
 
 describe('native schedule CRUD tools', () => {
+  it.each([undefined, 'stale-user-tenant'])(
+    'uses the authenticated request tenant over user tenant %s',
+    async (userTenant) => {
+      const h = setup();
+      Object.assign(h.req, { tenantId: 'authenticated-tenant' });
+      h.req.user!.tenantId = userTenant;
+      h.getConversation.mockResolvedValue(
+        Object.assign(await h.getConversation(), { tenantId: 'authenticated-tenant' }),
+      );
+      h.getGenerationJob.mockResolvedValue(
+        Object.assign(await h.getGenerationJob(), {
+          metadata: { userId, tenantId: 'authenticated-tenant' },
+        }),
+      );
+
+      expect(await h.invoke('create_schedule', input)).toEqual({ id: 'schedule-1' });
+      expect(h.handlers.createSchedule).toHaveBeenCalledWith(
+        expect.objectContaining({ tenantId: 'authenticated-tenant' }),
+        expect.anything(),
+      );
+    },
+  );
+
+  it('includes the authenticated tenant in revision and create replay identities', async () => {
+    const h = setup();
+    const setRevision = jest.spyOn(h.revisions, 'set');
+    for (const tenantId of ['tenant-one', 'tenant-two']) {
+      Object.assign(h.req, { tenantId });
+      h.getConversation.mockResolvedValue(Object.assign(await h.getConversation(), { tenantId }));
+      h.getGenerationJob.mockResolvedValue(
+        Object.assign(await h.getGenerationJob(), { metadata: { userId, tenantId } }),
+      );
+      await h.invoke('list_schedules');
+      expect(await h.invoke('create_schedule', input)).toEqual({ id: 'schedule-1' });
+    }
+
+    expect(setRevision.mock.calls[0][0]).not.toBe(setRevision.mock.calls[1][0]);
+    expect(h.handlers.createSchedule.mock.calls[0][0].body).not.toEqual(
+      h.handlers.createSchedule.mock.calls[1][0].body,
+    );
+  });
+
   it('returns model-facing records without ownership, revision or default timezone fields', async () => {
     const h = setup();
     expect(await h.invoke('create_schedule', input)).toEqual({ id: 'schedule-1' });

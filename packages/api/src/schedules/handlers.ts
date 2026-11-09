@@ -34,6 +34,7 @@ import {
   isValidOnceAt,
 } from './cadence';
 import { ScheduleMCPError, getScheduleMCPFailureCode } from './mcp';
+import { resolveRequestTenantId } from '~/middleware/tenant';
 import { resolveScheduleProjectId } from './types';
 
 export type { ScheduleToolRequest, ScheduleToolContext } from './request';
@@ -368,7 +369,7 @@ export function toWireSchedule(
 
 function requestUser(req: ServerRequest): { id: string; tenantId?: string; role?: string } {
   const user = req.user as { id: string; tenantId?: string; role?: string };
-  return { id: user.id, tenantId: user.tenantId, role: user.role };
+  return { id: user.id, tenantId: resolveRequestTenantId(req), role: user.role };
 }
 
 type ScheduleHandler = (req: ScheduleToolRequest, res: Response) => Promise<void>;

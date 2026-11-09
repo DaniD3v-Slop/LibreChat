@@ -76,7 +76,7 @@ export function resolveToolApprovalPolicy(
   ) {
     policy = { ...policy, enabled: true, mode: 'bypass' };
   }
-  if (layers.scheduleChat === true) {
+  if (layers.scheduleChat === true && policy?.mode !== 'dontAsk') {
     const defaultAsks = SCHEDULE_WRITE_TOOL_NAMES.filter(
       (name) => !policy?.allow?.some((pattern) => globToRegex(pattern).test(name)),
     );
@@ -920,6 +920,7 @@ export function exemptAskUserQuestionFromApproval(
 export function exemptScheduleReadsFromApproval(
   policy: TToolApprovalPolicy | undefined,
 ): TToolApprovalPolicy | undefined {
+  if (policy?.mode === 'dontAsk') return policy;
   return exemptAskUserQuestionFromApproval(
     exemptAskUserQuestionFromApproval(policy, 'list_schedules'),
     'get_schedule',

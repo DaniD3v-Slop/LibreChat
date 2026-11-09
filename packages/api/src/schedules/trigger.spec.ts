@@ -132,6 +132,23 @@ describe('schedule generation recursion context', () => {
     expect(getJob).toHaveBeenCalledWith('conversation-1');
   });
 
+  it.each([undefined, 'stale-user-tenant'])(
+    'uses authenticated request tenant over user tenant %s',
+    async (userTenant) => {
+      const request = {
+        ...req,
+        tenantId: 'tenant-1',
+        user: { id: 'user-1', tenantId: userTenant },
+      };
+      const getJob = async () => ({
+        createdAt: 123,
+        metadata: { userId: 'user-1', tenantId: 'tenant-1', scheduleSteered: true },
+      });
+
+      await expect(hasScheduledGenerationContext(request, getJob)).resolves.toBe(true);
+    },
+  );
+
   it('does not cache an earlier non-scheduled generation snapshot', async () => {
     const metadata = { userId: 'user-1', tenantId: 'tenant-1', scheduleSteered: false };
     const getJob = async () => ({ createdAt: 123, metadata });

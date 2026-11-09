@@ -34,6 +34,7 @@ import type { CheckAccessParams } from '~/middleware/access';
 import type { WireSchedule } from '~/schedules/wire';
 import type { ServerRequest } from '~/types/http';
 import { hasScheduledGenerationContext, isScheduleFireRequest } from '~/schedules/trigger';
+import { resolveRequestTenantId } from '~/middleware/tenant';
 import { isValidTimezone } from '~/schedules/cadence';
 import { getSafeErrorMetadata } from '~/utils/errors';
 import { checkAccess } from '~/middleware/access';
@@ -181,6 +182,7 @@ async function callHandler(
   const request = Object.assign({} as ScheduleToolRequest, {
     user: deps.req.user,
     config: deps.req.config,
+    tenantId: resolveRequestTenantId(deps.req),
     body,
     params: id ? { id } : {},
     scheduleToolContext: context,
@@ -265,12 +267,13 @@ export function createScheduleTool(
         const callId = config?.toolCall?.id;
         if (!req.user || !agentId || !conversationId || (write && (!callId || !getGenerationJob)))
           return JSON.stringify({ code: 'schedule_chat_missing_context' });
+        const tenantId = resolveRequestTenantId(req);
         const conversation = await deps.getConversation(req.user.id, conversationId);
         const persistedAgentId = stripAgentIdSuffix(agentId);
         if (
           !conversation ||
           conversation.agent_id !== persistedAgentId ||
-          (conversation.tenantId ?? undefined) !== (req.user.tenantId ?? undefined) ||
+          (conversation.tenantId ?? undefined) !== tenantId ||
           (conversation.user != null && String(conversation.user) !== req.user.id)
         )
           return JSON.stringify({ code: 'schedule_chat_missing_context' });
@@ -283,7 +286,7 @@ export function createScheduleTool(
           .update(
             JSON.stringify([
               req.user.id,
-              req.user.tenantId,
+              tenantId,
               persistedAgentId,
               conversationId,
               context.projectId,
@@ -353,7 +356,7 @@ export function createScheduleTool(
             .update(
               JSON.stringify([
                 req.user.id,
-                req.user.tenantId,
+                tenantId,
                 conversationId,
                 req.turnStartedAt,
                 persistedAgentId,

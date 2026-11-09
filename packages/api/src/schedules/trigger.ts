@@ -1,4 +1,7 @@
+import { resolveRequestTenantId } from '~/middleware/tenant';
+
 interface ScheduleTriggerRequest {
+  tenantId?: string;
   _isAgentTrigger?: boolean;
   _isScheduledFire?: boolean;
   _isManualScheduledFire?: boolean;
@@ -148,7 +151,7 @@ export async function hasScheduledGenerationContext(
   if (
     job?.createdAt !== req.turnStartedAt ||
     job.metadata?.userId !== req.user.id ||
-    (job.metadata?.tenantId ?? undefined) !== (req.user.tenantId ?? undefined)
+    (job.metadata?.tenantId ?? undefined) !== resolveRequestTenantId(req)
   ) {
     throw new Error('Schedule tool generation identity does not match the requesting user');
   }

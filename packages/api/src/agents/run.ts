@@ -87,15 +87,15 @@ import {
   stripBackgroundFromToolDefinitions,
 } from '~/agents/background';
 import {
-  resolveToolApprovalPolicy,
-  exemptAskUserQuestionFromApproval,
-  exemptScheduleReadsFromApproval,
-} from '~/agents/hitl/policy';
-import {
   createSubagentWakeupHandleHook,
   agentUsesSubagentCompletionWakeups,
   usesSubagentCompletionWakeups,
 } from '~/agents/subagentDelivery';
+import {
+  resolveToolApprovalPolicy,
+  exemptAskUserQuestionFromApproval,
+  exemptScheduleReadsFromApproval,
+} from '~/agents/hitl/policy';
 import {
   resolveStreamLimits,
   resolveModelTransportTimeouts,

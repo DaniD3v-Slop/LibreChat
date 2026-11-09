@@ -27,9 +27,9 @@ import {
   retainToolOptionsLimits,
   ToolOptionsLimitError,
 } from '../options';
+import { SCHEDULE_CHAT_TOOL_NAME, SCHEDULE_WRITE_TOOL_NAMES } from '~/agents/schedule';
 import { selectSkillPrimesForTurn, unionPrimeAllowedTools } from '~/agents/skills';
 import { isMCPAllPlaceholder, normalizeAgentToolKeys } from '~/mcp/utils';
-import { SCHEDULE_CHAT_TOOL_NAME, SCHEDULE_WRITE_TOOL_NAMES } from '~/agents/schedule';
 import { ASK_USER_QUESTION_TOOL_NAME } from './askUserQuestionTool';
 import { aliasMCPToolOptions } from '~/tools/classification';
 import { resolvedToolApprovalHooksCanMatch } from './hooks';
@@ -483,9 +483,13 @@ export function canAgentGraphPause({
     }
   }
 
-  const effectivePolicy = exemptScheduleReadsFromApproval(
-    buildEffectiveToolApprovalPolicy(policy, aliases, toolApprovalAllows),
-  );
+  const basePolicy = buildEffectiveToolApprovalPolicy(policy, aliases, toolApprovalAllows);
+  const effectivePolicy =
+    agentsRequestScheduleChat(approvalGraph.agents) ||
+    toolOwners.has('list_schedules') ||
+    toolOwners.has('get_schedule')
+      ? exemptScheduleReadsFromApproval(basePolicy)
+      : basePolicy;
   const knownToolCanPause = Array.from(toolOwners).some(([toolName, agentIds]) => {
     if (isToolBlockedByApprovalPolicy(effectivePolicy, toolName)) return false;
     if (reviewGatedTools.has(toolName)) return true;

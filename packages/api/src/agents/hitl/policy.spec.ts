@@ -18,6 +18,7 @@ import {
   applyResumeRequest,
   applyResumeModelParameters,
   exemptAskUserQuestionFromApproval,
+  exemptScheduleReadsFromApproval,
   isToolApprovalPauseCapable,
   isToolDeniedByApprovalPolicy,
   isToolBlockedByApprovalPolicy,
@@ -176,6 +177,65 @@ describe('schedule_chat approval policy', () => {
       ask: ['create_schedule', 'update_schedule', 'delete_schedule'],
     });
   });
+
+  test.each([
+    { ask: undefined, expected: 'deny' },
+    { ask: ['create_schedule'], expected: 'ask' },
+  ])(
+    'preserves SDK dontAsk denial unless the administrator explicitly asks: %j',
+    async ({ ask, expected }) => {
+      const policy = resolveToolApprovalPolicy({
+        endpoint: { enabled: true, mode: 'dontAsk', ask },
+        scheduleChat: true,
+      });
+      const hook = createToolPolicyHook(mapToolApprovalPolicy(policy)!);
+      const result = await hook(
+        {
+          hook_event_name: 'PreToolUse',
+          runId: 'test',
+          toolName: 'create_schedule',
+          toolInput: {},
+          toolUseId: 'call',
+        },
+        new AbortController().signal,
+      );
+
+      expect(result.decision).toBe(expected);
+      expect(isToolBlockedByApprovalPolicy(policy, 'create_schedule')).toBe(expected === 'deny');
+    },
+  );
+
+  test.each(['get_schedule', 'list_schedules'])(
+    'preserves SDK dontAsk denial and explicit rules for %s reads',
+    async (toolName) => {
+      for (const rules of [
+        { expected: 'deny' },
+        { deny: ['*_schedules', '*_schedule'], expected: 'deny' },
+        { allow: [toolName], expected: 'allow' },
+        { ask: [toolName], expected: 'ask' },
+      ]) {
+        const { expected, ...patterns } = rules;
+        const policy = exemptScheduleReadsFromApproval({
+          enabled: true,
+          mode: 'dontAsk',
+          ...patterns,
+        });
+        const hook = createToolPolicyHook(mapToolApprovalPolicy(policy)!);
+        const result = await hook(
+          {
+            hook_event_name: 'PreToolUse',
+            runId: 'test',
+            toolName,
+            toolInput: {},
+            toolUseId: 'call',
+          },
+          new AbortController().signal,
+        );
+
+        expect(result.decision).toBe(expected);
+      }
+    },
+  );
 
   test('preserves the administrator approval kill switch', () => {
     const endpoint: TToolApprovalPolicy = { enabled: false };
