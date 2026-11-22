@@ -35,12 +35,16 @@ const RUN_TONE: Record<ScheduleRunStatus, { tone: ScheduleRowTone; label: Transl
  * did the last run end badly, and otherwise it is simply running.
  *
  * A schedule the system disabled reads as paused with an error marker, because the
- * clock has stopped either way and the reason is printed underneath.
+ * clock has stopped either way and the reason is printed underneath. A one-time
+ * schedule that ran has finished rather than stopped, so it reads as completed.
  */
 export function scheduleRowState(
   schedule: Pick<TSchedule, 'enabled' | 'disabledReason' | 'lastRun'>,
   localize: LocalizeFunction,
 ): ScheduleRowState {
+  if (schedule.disabledReason === 'completed') {
+    return { tone: 'paused', label: localize('com_ui_schedule_completed') };
+  }
   if (schedule.disabledReason != null) {
     return { tone: 'error', label: localize('com_ui_schedule_paused') };
   }

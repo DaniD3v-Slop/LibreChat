@@ -422,7 +422,7 @@ export default function ScheduleCard({ schedule, projectName, consentEnabled }: 
           </div>
           {/* Only what the two lines above cannot say: why the clock stopped, and how
               to get an MCP server back. A healthy schedule shows neither. */}
-          {schedule.disabledReason != null && (
+          {schedule.disabledReason != null && schedule.disabledReason !== 'completed' && (
             <div className="mt-1.5">
               <Chip tone="error">
                 {localize(disabledMCPLabel ?? DISABLED_REASON_LABELS[schedule.disabledReason])}

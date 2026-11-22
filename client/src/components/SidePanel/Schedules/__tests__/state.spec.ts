@@ -45,6 +45,12 @@ describe('scheduleRowState', () => {
     });
   });
 
+  it('calls a finished one-time schedule completed, without an error marker', () => {
+    expect(
+      scheduleRowState(schedule({ enabled: false, disabledReason: 'completed' }), localize),
+    ).toEqual({ tone: 'paused', label: 'com_ui_schedule_completed' });
+  });
+
   it('surfaces a failed run over the next one', () => {
     for (const status of ['error', 'interrupted'] as const) {
       expect(
