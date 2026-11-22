@@ -51,4 +51,6 @@ export interface ScheduleUserContext {
   id: string;
   tenantId?: string;
   role?: string;
+  /** Absent on an owner row that predates the flag, which counts as not accepted. */
+  termsAccepted?: boolean;
 }

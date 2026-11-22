@@ -1,6 +1,12 @@
 import React from 'react';
 import { render, screen } from '@testing-library/react';
+import { SteerHostProvider } from '@librechat/chat/react';
+import { MessagesHostTestProvider } from 'test/messagesHost';
+import { inertSteerHost } from 'test/inertSteerHost';
+import { ChatSurfaceHarness } from 'test/harness';
 import ChatView from '../ChatView';
+/** The app registers its parts host at boot (App.jsx); the child's list reads it. */
+import '~/Providers/MessagePartsHostContext';
 
 jest.mock('~/components/SidePanel/Schedules/useRunSync', () => ({
   __esModule: true,
@@ -24,8 +30,11 @@ jest.mock('react-hook-form', () => ({
 }));
 
 jest.mock('@librechat/client', () => ({
+  ...jest.requireActual('@librechat/client'),
   Spinner: () => <div data-testid="spinner" />,
   cn: (...values: Array<string | false | null | undefined>) => values.filter(Boolean).join(' '),
+  useLocalize: () => (key: string) => key,
+  useRemScale: () => 1,
 }));
 
 jest.mock('librechat-data-provider', () => ({
@@ -58,10 +67,6 @@ jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string) => key,
 }));
 
-jest.mock('~/hooks/Chat/outcomes', () => ({
-  getMappingOptions: () => ({}),
-}));
-
 jest.mock('~/Providers', () => {
   const Passthrough = ({ children }: { children: React.ReactNode }) => <>{children}</>;
   const Context = { Provider: Passthrough };
@@ -71,17 +76,23 @@ jest.mock('~/Providers', () => {
     ChatFormProvider: Passthrough,
     ComposerRestoreProvider: Passthrough,
     useFileMapContext: () => new Map(),
+    useAgentsMapContext: () => undefined,
   };
 });
 
+jest.mock('~/hooks/Chat/target', () => ({
+  __esModule: true,
+  default: () => ({ ready: true, pending: false, failed: false, retry: jest.fn() }),
+}));
+
 jest.mock('~/data-provider', () => ({
+  useCachedMessages: () => ({ data: null }),
   useProjectQuery: () => ({ data: undefined }),
   useGetStartupConfig: () => ({ data: undefined }),
   useSchedulesQuery: () => ({}),
 }));
 
 jest.mock('../Input/ConversationStarters', () => () => null);
-jest.mock('../Messages/MessagesView', () => () => <div data-testid="messages" />);
 jest.mock('../Presentation', () => ({ children }: { children: React.ReactNode }) => (
   <>{children}</>
 ));
@@ -126,7 +137,15 @@ describe('ChatView child-thread execution identity', () => {
       },
     };
 
-    render(<ChatView />);
+    render(
+      <ChatSurfaceHarness>
+        <MessagesHostTestProvider>
+          <SteerHostProvider host={inertSteerHost}>
+            <ChatView />
+          </SteerHostProvider>
+        </MessagesHostTestProvider>
+      </ChatSurfaceHarness>,
+    );
 
     expect(screen.queryByTestId('chat-form')).not.toBeInTheDocument();
     expect(screen.getByRole('note')).toHaveTextContent('com_ui_subagent_thread_read_only');

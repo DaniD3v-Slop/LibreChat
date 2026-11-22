@@ -4,14 +4,17 @@ import { createHash } from 'node:crypto';
 import { logger } from '@librechat/data-schemas';
 import {
   configSchema,
+  persistenceConfigSchema,
   EModelEndpoint,
   EImageOutputType,
   getMaxSubagents,
   setMaxSubagents,
+  setPiiRegexProgramSizer,
 } from 'librechat-data-provider';
 import type { TCustomConfig, TEndpoint } from 'librechat-data-provider';
 import type { ConfigOverrideIssue } from '@librechat/data-schemas';
 import type { ZodIssue } from 'zod';
+import { getPiiRegexProgramSize } from '~/protection/programSize';
 import { serviceRequestBudget } from '~/utils/timeouts';
 import { checkConfigPolicyLinks } from './interface';
 import { expandCustomEndpoint } from './params';
@@ -21,6 +24,8 @@ export type CustomConfigLoadMode = 'startup' | 'reload';
 
 export interface CustomConfigLoadOptions {
   mode?: CustomConfigLoadMode;
+  /** Storage initialization must distinguish an absent default from an unreadable source. */
+  storageSelection?: boolean;
 }
 
 export interface LoadedCustomConfig {
@@ -192,6 +197,17 @@ export function createCustomConfigLoader({
       cause?: unknown,
       startupLogLevel: 'error' | 'info' = 'error',
     ): null => {
+      if (
+        options.storageSelection &&
+        !(
+          cause instanceof Error &&
+          'code' in cause &&
+          cause.code === 'ENOENT' &&
+          !process.env.CONFIG_PATH
+        )
+      ) {
+        throw new ConfigReloadError('Deployment config unavailable for storage selection');
+      }
       if (mode === 'reload') {
         if (cause == null) {
           logger.error(message);
@@ -261,6 +277,16 @@ export function createCustomConfigLoader({
       }
 
       /** The checks below return copies, but `modelSpecs` is assigned onto this object later. */
+      if (
+        typeof loadedConfig === 'object' &&
+        loadedConfig != null &&
+        'persistence' in loadedConfig
+      ) {
+        const persistence = persistenceConfigSchema.safeParse(loadedConfig.persistence);
+        if (!persistence.success) {
+          throw new ConfigReloadError('Invalid persistence configuration');
+        }
+      }
       const parsedConfig = loadedConfig;
       const themeCheck = checkConfigTheme(loadedConfig);
       loadedConfig = themeCheck.config;
@@ -270,6 +296,9 @@ export function createCustomConfigLoader({
       reportPolicyLinkCheck(configPath, linkCheck.dropped);
 
       setMaxSubagents(getConfiguredMaxSubagents(loadedConfig));
+      /* `filters` PII patterns are sized by RE2, which the shared schema cannot carry. Every
+         entry point loads config through here, the CLI scripts included, so register it here. */
+      setPiiRegexProgramSizer(getPiiRegexProgramSize);
       const result = configSchema.strict().safeParse(loadedConfig);
       if (
         result.error?.issues.some(
@@ -302,6 +331,13 @@ export function createCustomConfigLoader({
           );
         }
 
+        if (
+          typeof loadedConfig === 'object' &&
+          loadedConfig != null &&
+          'persistence' in loadedConfig
+        ) {
+          throw new ConfigReloadError('Invalid configuration containing persistence selection');
+        }
         if (process.env.CONFIG_BYPASS_VALIDATION === 'true') {
           logger.warn(
             'CONFIG_BYPASS_VALIDATION is enabled. Continuing with default configuration despite validation errors.',
