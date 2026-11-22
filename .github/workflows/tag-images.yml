@@ -71,5 +71,3 @@ jobs:
          {"target":"runtime","file":"packages/channel-gateway/Dockerfile","image_name":"librechat-channel-gateway"}]
       tag_suffixes: ${{ needs.resolve-tags.outputs.tag_suffixes }}
       build_branch: ${{ github.ref_name }}
-    secrets:
-      LEGACY_GHCR_TOKEN: ${{ secrets.LEGACY_GHCR_TOKEN }}

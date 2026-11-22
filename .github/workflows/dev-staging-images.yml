@@ -18,5 +18,3 @@ jobs:
         ${{ github.sha }}
         latest
       build_branch: ${{ github.ref_name }}
-    secrets:
-      LEGACY_GHCR_TOKEN: ${{ secrets.LEGACY_GHCR_TOKEN }}

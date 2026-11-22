@@ -40,12 +40,6 @@ on:
       build_timeout_minutes:
         type: number
         default: 90
-    secrets:
-      LEGACY_GHCR_TOKEN:
-        description: >-
-          Token that can write to the LEGACY_GHCR_OWNER namespace. Without it the
-          mirror step is skipped.
-        required: false
 
 permissions:
   contents: read

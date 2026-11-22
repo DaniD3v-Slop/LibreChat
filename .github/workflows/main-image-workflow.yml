@@ -57,5 +57,3 @@ jobs:
         latest
       checkout_ref: ${{ needs.resolve-tag.outputs.sha }}
       build_branch: ${{ needs.resolve-tag.outputs.latest_tag }}
-    secrets:
-      LEGACY_GHCR_TOKEN: ${{ secrets.LEGACY_GHCR_TOKEN }}
