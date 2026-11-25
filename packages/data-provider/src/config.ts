@@ -1081,6 +1081,7 @@ export const defaultAgentCapabilities = [
   AgentCapabilities.skills,
   AgentCapabilities.memory,
   AgentCapabilities.ask_user_question,
+  AgentCapabilities.schedule_chat,
   AgentCapabilities.tools,
   AgentCapabilities.ocr,
 ];
