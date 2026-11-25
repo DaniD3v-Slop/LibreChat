@@ -1,7 +1,8 @@
 import { useState, type ReactNode, useId } from 'react';
 import { Plus } from 'lucide-react';
 import { Button, FilterInput, TooltipAnchor } from '@librechat/client';
-import { PermissionTypes, Permissions } from 'librechat-data-provider';
+import { PermissionTypes, Permissions, isOnceCadence } from 'librechat-data-provider';
+import type { TSchedule } from 'librechat-data-provider';
 import { PanelContent, PanelFooter, PanelHeader } from '~/components/ui';
 import { useChatProjectNames } from './useScheduleProjects';
 import ScheduleCardSkeleton from './ScheduleCardSkeleton';
@@ -12,6 +13,10 @@ import ScheduleDialog from './ScheduleDialog';
 import { useChatContext } from '~/Providers';
 import ScheduleCard from './ScheduleCard';
 
+/** A one-time schedule that has fired: kept for its run history, hidden by default. */
+const isDelivered = (schedule: TSchedule) =>
+  !schedule.enabled && schedule.disabledReason === 'completed' && isOnceCadence(schedule.cadence);
+
 export default function SchedulePanel() {
   const localize = useLocalize();
   const headingId = useId();
@@ -19,6 +24,7 @@ export default function SchedulePanel() {
   const { data, isLoading, isError, refetch } = useSchedulesQuery();
   const [createOpen, setCreateOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const [showDelivered, setShowDelivered] = useState(false);
 
   const hasCreateAccess = useHasAccess({
     permissionType: PermissionTypes.SCHEDULES,
@@ -26,13 +32,17 @@ export default function SchedulePanel() {
   });
 
   const allSchedules = data?.schedules ?? [];
+  const delivered = allSchedules.filter(isDelivered).length;
+  const visible = showDelivered
+    ? allSchedules
+    : allSchedules.filter((schedule) => !isDelivered(schedule));
   /** Filtering is client-side because the panel already holds every schedule the
    *  limit allows; a query per keystroke would buy nothing. */
   const query = searchQuery.trim().toLowerCase();
   const schedules =
     query.length > 0
-      ? allSchedules.filter((schedule) => schedule.name.toLowerCase().includes(query))
-      : allSchedules;
+      ? visible.filter((schedule) => schedule.name.toLowerCase().includes(query))
+      : visible;
   /** ONE lookup for the whole list. Resolving a name inside each card would re-walk
    *  every loaded project per card, per render. Skipped entirely until some schedule
    *  actually has a scope, so an unscoped panel issues no project request at all. */
@@ -129,6 +139,16 @@ export default function SchedulePanel() {
         {/* A failed query must not masquerade as an empty list or enable creation
             against limits that could not be loaded. */}
         {panelContent}
+        {!isError && delivered > 0 && (
+          <Button variant="ghost" onClick={() => setShowDelivered((shown) => !shown)}>
+            {localize(
+              showDelivered ? 'com_ui_schedules_hide_delivered' : 'com_ui_schedules_show_delivered',
+              {
+                count: delivered,
+              },
+            )}
+          </Button>
+        )}
       </PanelContent>
 
       {!isLoading && !isError && maxPerUser !== undefined && (
