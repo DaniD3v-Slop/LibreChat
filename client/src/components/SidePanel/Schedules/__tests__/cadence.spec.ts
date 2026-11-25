@@ -5,6 +5,15 @@ const localize = (key: string, vars?: Record<string, unknown>) =>
   vars ? `${key} ${JSON.stringify(vars)}` : key;
 
 describe('describeCadence', () => {
+  it('describes a one-shot in its wall-clock date without applying the browser timezone', () => {
+    expect(
+      describeCadence({ frequency: 'once', at: '2027-01-15T21:05' }, localize, 'en-US', false),
+    ).toContain('com_ui_schedule_runs_once');
+    expect(
+      describeCadence({ frequency: 'once', at: '2027-01-15T21:05' }, localize, 'en-US', false),
+    ).toContain('21:05');
+  });
+
   it('shows a cron cadence as the expression the user typed', () => {
     // Deliberately not translated into prose: a five-field expression can say things
     // no sentence template covers, and a wrong summary of a cadence the user wrote

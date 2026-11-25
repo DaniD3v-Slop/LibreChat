@@ -1,5 +1,6 @@
 import {
   captureScheduleFireContext,
+  hasScheduledGenerationContext,
   exemptFromConcurrencyLimiter,
   exemptFromUserLimiter,
   isScheduleFireRequest,
@@ -46,6 +47,34 @@ describe('schedule trigger context', () => {
     expect(exemptFromConcurrencyLimiter(req)).toBe(true);
   });
 
+  it('preserves the agent bound by the trusted trigger target', () => {
+    const req = request();
+    const context = readScheduleFireContext({
+      ...req,
+      body: {
+        agentTrigger: { ...req.body.agentTrigger, target: { agentId: 'agent-1' } },
+      },
+    });
+
+    expect(context).toMatchObject({ scheduleId: 'schedule-1', agentId: 'agent-1' });
+  });
+
+  it.each([undefined, '', 123])(
+    'keeps schedule provenance without accepting an invalid agent target %s',
+    (agentId) => {
+      const req = request();
+      const context = readScheduleFireContext({
+        ...req,
+        body: {
+          agentTrigger: { ...req.body.agentTrigger, target: { agentId } },
+        },
+      });
+
+      expect(context).toMatchObject({ scheduleId: 'schedule-1' });
+      expect(context).not.toHaveProperty('agentId');
+    },
+  );
+
   it('keeps manual runs on the interactive user and concurrency limiters', () => {
     const req = request(true);
     captureScheduleFireContext(req);
@@ -80,5 +109,51 @@ describe('schedule trigger context', () => {
         body: { agentTrigger: { version: 1, ...agentTrigger } },
       }),
     ).toBeUndefined();
+  });
+});
+
+describe('schedule generation recursion context', () => {
+  const req = {
+    user: { id: 'user-1', tenantId: 'tenant-1' },
+    turnStartedAt: 123,
+    body: { conversationId: 'conversation-1' },
+  };
+
+  it('reads durable scheduled-steer context on an ordinary or resumed request', async () => {
+    const getJob = jest.fn(async () => ({
+      createdAt: 123,
+      metadata: {
+        userId: 'user-1',
+        tenantId: 'tenant-1',
+        scheduleSteered: true,
+      },
+    }));
+    expect(await hasScheduledGenerationContext(req, getJob)).toBe(true);
+    expect(getJob).toHaveBeenCalledWith('conversation-1');
+  });
+
+  it('does not cache an earlier non-scheduled generation snapshot', async () => {
+    const metadata = { userId: 'user-1', tenantId: 'tenant-1', scheduleSteered: false };
+    const getJob = async () => ({ createdAt: 123, metadata });
+    expect(await hasScheduledGenerationContext(req, getJob)).toBe(false);
+    metadata.scheduleSteered = true;
+    expect(await hasScheduledGenerationContext(req, getJob)).toBe(true);
+  });
+
+  it.each([
+    undefined,
+    { createdAt: 124, metadata: { userId: 'user-1', tenantId: 'tenant-1' } },
+    { createdAt: 123, metadata: { userId: 'other', tenantId: 'tenant-1' } },
+    { createdAt: 123, metadata: { userId: 'user-1', tenantId: 'other' } },
+  ])('fails closed for missing or mismatched generation identity', async (job) => {
+    await expect(hasScheduledGenerationContext(req, async () => job)).rejects.toThrow();
+  });
+
+  it('uses trusted schedule request provenance without another job lookup', async () => {
+    const getJob = jest.fn();
+    expect(await hasScheduledGenerationContext({ ...req, _isScheduledFire: true }, getJob)).toBe(
+      true,
+    );
+    expect(getJob).not.toHaveBeenCalled();
   });
 });

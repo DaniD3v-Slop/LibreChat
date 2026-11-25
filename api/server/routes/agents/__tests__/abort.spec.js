@@ -28,6 +28,7 @@ const mockHasPersistedPrivateText = jest.fn();
 const mockGetPrivateMessageTexts = jest.fn();
 const mockSaveConvo = jest.fn();
 const mockGetMessages = jest.fn(async () => [{ _id: 'existing-anchor' }]);
+const mockDeleteAgentCheckpoint = jest.fn();
 
 const mockRecordScheduleOutcome = jest.fn();
 const mockBeginScheduledStop = jest.fn();
@@ -47,6 +48,7 @@ jest.mock('@librechat/api', () => ({
     req._isManualScheduledFire = false;
   }),
   GenerationJobManager: mockGenerationJobManager,
+  deleteAgentCheckpoint: (...args) => mockDeleteAgentCheckpoint(...args),
 }));
 
 jest.mock('~/models', () => ({
@@ -125,6 +127,8 @@ describe('Agent Abort Endpoint', () => {
     mockGenerationJobManager.abortJob.mockReset();
     mockGenerationJobManager.getActiveJobIdsForUser.mockReset();
     mockSaveMessage.mockReset();
+    mockDeleteAgentCheckpoint.mockReset();
+    mockDeleteAgentCheckpoint.mockResolvedValue(undefined);
     mockSaveMessage.mockImplementation(async (_context, message) => message);
     mockHasPersistedPrivateText.mockReset();
     mockHasPersistedPrivateText.mockResolvedValue(true);
@@ -141,6 +145,32 @@ describe('Agent Abort Endpoint', () => {
   });
 
   describe('POST /chat/abort', () => {
+    it('prunes implicit schedule approval checkpoints even without a pending action', async () => {
+      const streamId = 'schedule-approval-abort';
+      mockGenerationJobManager.getJob.mockResolvedValue({
+        createdAt: 42,
+        metadata: { userId: 'test-user-123', checkpointNamespace: 'schedule-generation' },
+      });
+      mockGenerationJobManager.abortJob.mockImplementation(async (_id, options) => {
+        const result = { success: true, jobData: null, content: [], text: '' };
+        await options.beforePublish(result);
+        return result;
+      });
+      const response = await request(app)
+        .post('/api/agents/chat/abort')
+        .send({ conversationId: streamId });
+      expect(response.status).toBe(200);
+      expect(mockDeleteAgentCheckpoint).toHaveBeenCalledWith(
+        streamId,
+        expect.anything(),
+        undefined,
+        {
+          throwOnError: true,
+          checkpointNamespace: 'schedule-generation',
+        },
+      );
+    });
+
     describe('Authorization', () => {
       it("should return 403 when user tries to abort another user's job", async () => {
         const jobStreamId = 'test-stream-123';

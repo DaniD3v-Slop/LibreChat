@@ -10,6 +10,7 @@ import {
 import type { Agents, TReasoningOverride, TToolApprovalPolicy } from 'librechat-data-provider';
 import type { ToolPolicyConfig } from '@librechat/agents';
 import type { MCPToolAlias } from '~/tools/classification';
+import { SCHEDULE_WRITE_TOOL_NAMES } from '~/agents/schedule';
 
 /**
  * Layered sources that combine into the effective tool-approval policy for a turn.
@@ -48,6 +49,8 @@ export interface ToolApprovalPolicyLayers {
    * endpoint into prompts; a hook supplies the decisions.
    */
   ownerApproval?: boolean;
+  /** The reachable tool graph includes schedule writes, which ask by default. */
+  scheduleChat?: boolean;
 }
 
 /**
@@ -60,27 +63,36 @@ export interface ToolApprovalPolicyLayers {
  *   - `agent` overrides `mode`/`allow`/`deny`/`ask`/`reason`;
  *   - `skills` may only tighten (add `ask`/`deny`), never loosen.
  *
- * When no endpoint policy is active, BYOM adds `enabled: true, mode: 'bypass'` and
- * an agent-scoped hook supplies its coding decisions. An already-enabled endpoint
- * policy remains the run-wide administrative baseline, including its unmatched-tool
- * mode. An explicit endpoint `enabled: false` remains the administrator emergency
+ * When no endpoint policy is active, BYOM, owner approval or schedule creation adds
+ * `enabled: true, mode: 'bypass'`. BYOM supplies its coding decisions through an
+ * agent-scoped hook; schedule writes add ask rules unless explicitly allowed.
+ * An already-enabled endpoint policy remains the administrative baseline,
+ * including its unmatched-tool mode. An explicit endpoint `enabled: false` remains the administrator emergency
  * override. `agent`/`skills` are accepted but not yet merged.
  */
 export function resolveToolApprovalPolicy(
   layers: ToolApprovalPolicyLayers,
 ): TToolApprovalPolicy | undefined {
-  if (
-    (layers.attachedCodeEnvironment === true || layers.ownerApproval === true) &&
-    layers.endpoint?.enabled !== true &&
-    layers.endpoint?.enabled !== false
-  ) {
-    return {
-      ...layers.endpoint,
-      enabled: true,
-      mode: 'bypass',
-    };
+  if (layers.endpoint?.enabled === false) {
+    return layers.endpoint;
   }
-  return layers.endpoint;
+
+  let policy = layers.endpoint;
+  if (
+    (layers.attachedCodeEnvironment === true ||
+      layers.ownerApproval === true ||
+      layers.scheduleChat === true) &&
+    policy?.enabled !== true
+  ) {
+    policy = { ...policy, enabled: true, mode: 'bypass' };
+  }
+  if (layers.scheduleChat === true) {
+    const defaultAsks = SCHEDULE_WRITE_TOOL_NAMES.filter(
+      (name) => !policy?.allow?.some((pattern) => globToRegex(pattern).test(name)),
+    );
+    return { ...policy, ask: [...new Set([...(policy?.ask ?? []), ...defaultAsks])] };
+  }
+  return policy;
 }
 
 /**
@@ -1046,4 +1058,22 @@ export function exemptAskUserQuestionFromApproval(
     return policy;
   }
   return { ...policy, allow: [...(policy.allow ?? []), toolName] };
+}
+
+/**
+ * Read-only schedule tools bypass the default prompt; explicit admin rules still win.
+ * Only a graph that carries the schedule tools gets the exemption, so an unrelated
+ * `dontAsk` policy keeps an empty exception list.
+ */
+export function exemptScheduleReadsFromApproval(
+  policy: TToolApprovalPolicy | undefined,
+  schedules: boolean,
+): TToolApprovalPolicy | undefined {
+  if (!schedules) {
+    return policy;
+  }
+  return exemptAskUserQuestionFromApproval(
+    exemptAskUserQuestionFromApproval(policy, 'list_schedules'),
+    'get_schedule',
+  );
 }

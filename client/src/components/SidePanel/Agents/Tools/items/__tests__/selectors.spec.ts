@@ -321,3 +321,23 @@ describe('selection — ask_user_question builtin rides agent.tools', () => {
     expect(none.map((i) => i.id)).not.toContain('ask_user_question');
   });
 });
+
+describe('schedule_chat builtin selection', () => {
+  test('reads the persisted agent.tools entry', () => {
+    const catalog: AgentItem[] = [
+      {
+        kind: 'builtin',
+        id: 'schedule_chat',
+        name: 'Schedule chat',
+        description: '',
+        iconKey: 'schedule_chat',
+      },
+    ];
+    expect(
+      deriveSelectedItems({ ...emptyFormState, tools: ['schedule_chat'] }, catalog, []).map(
+        (item) => item.id,
+      ),
+    ).toEqual(['schedule_chat']);
+    expect(deriveSelectedItems(emptyFormState, catalog, [])).toEqual([]);
+  });
+});

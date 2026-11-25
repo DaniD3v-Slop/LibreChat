@@ -149,6 +149,9 @@ export function sanitizeJobMetadata(metadata: Partial<GenerationJobMetadata>): J
   if (metadata.scheduleManual !== undefined) {
     patch.scheduleManual = metadata.scheduleManual;
   }
+  if (metadata.scheduleSteered === true) {
+    patch.scheduleSteered = true;
+  }
   if (metadata.scheduleOutcome !== undefined) {
     patch.scheduleOutcome = metadata.scheduleOutcome;
   }

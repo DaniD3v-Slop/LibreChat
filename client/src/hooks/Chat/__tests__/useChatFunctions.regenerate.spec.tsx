@@ -32,8 +32,8 @@ import {
   pendingUsageFamily,
 } from '~/components/Chat/Input/TokenUsage/store';
 import { ChatSettingsContext, defaultChatSettings } from '~/Providers/ChatSettingsContext';
+import { isPasteSubmitted, selectActiveBranchTail } from '~/utils';
 import useChatFunctions from '../useChatFunctions';
-import { isPasteSubmitted } from '~/utils';
 
 const mockNavigate = jest.fn();
 const mockSetIsSubmitting = jest.fn();
@@ -283,6 +283,7 @@ function renderAsk(
     reasoningOverride?: TReasoningOverride;
     agentId?: string;
     files?: Map<string, ExtendedFile>;
+    latestMessage?: TMessage | null;
   } = {},
 ) {
   const setMessages = jest.fn();
@@ -312,7 +313,7 @@ function renderAsk(
     () =>
       useChatFunctions({
         isSubmitting: options.isSubmitting ?? false,
-        getLatestMessage: () => messages?.at(-1) ?? null,
+        getLatestMessage: () => options.latestMessage ?? messages?.at(-1) ?? null,
         conversation: immutableConversation,
         getMessages,
         setMessages,
@@ -335,6 +336,23 @@ beforeEach(() => {
 });
 
 describe('useChatFunctions ask', () => {
+  it('parents the next submission on a scheduled continuation after history reconciliation', () => {
+    const messages = [
+      userMessage('user-1'),
+      assistantMessage('old-answer', 'user-1'),
+      userMessage('scheduled-user', 'old-answer'),
+      assistantMessage('reminder-answer', 'scheduled-user'),
+    ];
+    const { result, setSubmission } = renderAsk(messages, 'conversation-1', {
+      latestMessage: selectActiveBranchTail(messages, 'conversation-1'),
+    });
+    act(() => {
+      result.current.ask({ text: 'Thanks' });
+    });
+    const submission = setSubmission.mock.calls.at(-1)?.[0] as TSubmission;
+    expect(submission.userMessage.parentMessageId).toBe('reminder-answer');
+  });
+
   beforeEach(() => {
     mockEndpointsQueryData.current = undefined;
     mockCapabilitiesData.current = undefined;

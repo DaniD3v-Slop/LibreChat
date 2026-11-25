@@ -21,6 +21,14 @@ import { createIndexesWithRetry } from '~/utils/retry';
 
 const DUPLICATE_KEY = 11000;
 
+/** Completion stops future occurrences while the persisted one-shot run may resume. */
+const RESUMABLE_SCHEDULE_FILTER = {
+  $or: [
+    { enabled: true },
+    { enabled: false, disabledReason: 'completed', 'cadence.frequency': 'once' },
+  ],
+};
+
 /**
  * Tolerance for inter-replica wall-clock skew on the worker-clock lease
  * comparisons (DocumentDB rules out the server-clock `$$NOW` CAS). Applied only
@@ -57,6 +65,7 @@ const TERMINAL_CARD_STATUSES: ScheduleRunStatus[] = [
   'interrupted',
   'skipped_overlap',
   'skipped_balance',
+  'skipped_inactive',
 ];
 
 type DuplicateKeyError = {
@@ -126,7 +135,13 @@ export interface RecordRunOutcomeParams {
   scheduledFor: Date;
   status: Extract<
     ScheduleRunStatus,
-    'success' | 'error' | 'requires_action' | 'interrupted' | 'skipped_balance' | 'skipped_overlap'
+    | 'success'
+    | 'error'
+    | 'requires_action'
+    | 'interrupted'
+    | 'skipped_balance'
+    | 'skipped_overlap'
+    | 'skipped_inactive'
   >;
   conversationId?: string;
   checkpointNamespace?: string;
@@ -192,6 +207,27 @@ export interface UpdateScheduleOptions {
    * that grant, with no pin or mark added to it since.
    */
   replacesMCPConsent?: ISchedule['mcpConsent'] | null;
+  scope?: ScheduleAccessScope;
+}
+
+/** Agent-tool visibility, applied in storage queries as well as handler admission. */
+export interface ScheduleAccessScope {
+  agentId: string;
+  conversationId: string;
+  projectId: string | null;
+  tenantId?: string;
+}
+
+function scopeFilter(scope?: ScheduleAccessScope) {
+  if (scope == null) {
+    return {};
+  }
+  return {
+    agent_id: scope.agentId,
+    tenantId: scope.tenantId ?? null,
+    chatProjectId: scope.projectId,
+    ...(scope.projectId == null && { originConversationId: scope.conversationId }),
+  };
 }
 
 export type ScheduleMethods = {
@@ -222,8 +258,15 @@ export type ScheduleMethods = {
     userId: string | Types.ObjectId,
     expectedConfigRevision?: number,
   ) => Promise<'deleted' | 'draining' | 'kept' | 'missing'>;
-  getScheduleById: (id: string, userId?: string | Types.ObjectId) => Promise<ISchedule | null>;
-  getSchedulesByUser: (userId: string | Types.ObjectId) => Promise<ISchedule[]>;
+  getScheduleById: (
+    id: string,
+    userId?: string | Types.ObjectId,
+    scope?: ScheduleAccessScope,
+  ) => Promise<ISchedule | null>;
+  getSchedulesByUser: (
+    userId: string | Types.ObjectId,
+    scope?: ScheduleAccessScope,
+  ) => Promise<ISchedule[]>;
   countSchedulesByUser: (userId: string | Types.ObjectId) => Promise<number>;
   claimDueSchedule: (params: ClaimDueScheduleParams) => Promise<ISchedule | null>;
   acquireManualRunLease: (
@@ -322,7 +365,11 @@ export type ScheduleMethods = {
     expectedStatus?: ScheduleRunStatus,
     expectedConversationId?: string,
   ) => Promise<void>;
-  markScheduleDeleting: (id: string, userId: string | Types.ObjectId) => Promise<ISchedule | null>;
+  markScheduleDeleting: (
+    id: string,
+    userId: string | Types.ObjectId,
+    scope?: ScheduleAccessScope,
+  ) => Promise<ISchedule | null>;
   getActiveRunsForSchedule: (scheduleId: string) => Promise<IScheduleRun[]>;
   getActiveRunsForUser: (
     userId: string | Types.ObjectId,
@@ -344,7 +391,12 @@ export type ScheduleMethods = {
   ) => Promise<ISchedule | null>;
   getDeletingScheduleIds: (userId: string | Types.ObjectId, limit: number) => Promise<string[]>;
   getUnarmedSchedules: (limit: number) => Promise<ISchedule[]>;
-  armSchedule: (id: string, nextRunAt: Date, expectedConfigRevision?: number) => Promise<boolean>;
+  armSchedule: (
+    id: string,
+    nextRunAt: Date,
+    expectedConfigRevision?: number,
+    scope?: ScheduleAccessScope,
+  ) => Promise<boolean>;
   eraseScheduleIfDrained: (id: string) => Promise<boolean>;
   deleteSchedulesByUser: (userId: string | Types.ObjectId) => Promise<void>;
   getUnbookkeptRuns: (olderThan: Date, limit: number) => Promise<IScheduleRun[]>;
@@ -354,7 +406,10 @@ export type ScheduleMethods = {
     data: Partial<IScheduleRun> & {
       scheduleId: string;
       scheduledFor: Date;
-      status: Extract<ScheduleRunStatus, 'skipped_overlap' | 'skipped_balance'>;
+      status: Extract<
+        ScheduleRunStatus,
+        'skipped_overlap' | 'skipped_balance' | 'skipped_inactive'
+      >;
     },
     balanceSkipDisableThreshold?: number,
   ) => Promise<void>;
@@ -476,6 +531,7 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
       throw new Error('Consent continuity is limited to activation state');
     const filter = {
       id,
+      ...scopeFilter(options?.scope),
       user: userId,
       deleting: { $ne: true },
       ...(preserveConsent && {
@@ -588,19 +644,25 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
   async function getScheduleById(
     id: string,
     userId?: string | Types.ObjectId,
+    scope?: ScheduleAccessScope,
   ): Promise<ISchedule | null> {
-    const filter: Record<string, unknown> = { id, deleting: { $ne: true } };
-    if (userId != null) {
-      filter.user = userId;
-    }
+    const filter = {
+      id,
+      deleting: { $ne: true },
+      ...scopeFilter(scope),
+      ...(userId != null && { user: userId }),
+    };
     return Schedule().findOne(filter).lean<ISchedule>();
   }
 
-  async function getSchedulesByUser(userId: string | Types.ObjectId): Promise<ISchedule[]> {
+  async function getSchedulesByUser(
+    userId: string | Types.ObjectId,
+    scope?: ScheduleAccessScope,
+  ): Promise<ISchedule[]> {
     // Hide schedules pending erasure (soft-deleted, draining their active runs)
     // so a deleted schedule disappears immediately for the owner.
     return Schedule()
-      .find({ user: userId, deleting: { $ne: true } })
+      .find({ user: userId, deleting: { $ne: true }, ...scopeFilter(scope) })
       .sort({ updatedAt: -1 })
       .select('-leaseUntil -leaseBy -claimToken')
       .lean<ISchedule[]>();
@@ -701,6 +763,7 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
    * carried through the approval CAS and atomically consumed immediately after it.
    * An owner edit rotates claimToken; a policy disable clears the lease/enabled bit.
    * Either therefore makes consumeResumeLease fail before provider execution starts.
+   * Completed one-shots remain eligible only for their already-persisted run.
    */
   async function acquireResumeLease(
     id: string,
@@ -717,7 +780,7 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
         {
           id,
           deleting: { $ne: true },
-          ...(requireEnabled ? { enabled: true } : {}),
+          ...(requireEnabled ? { $and: [RESUMABLE_SCHEDULE_FILTER] } : {}),
           ...(expectedConfigRevision !== undefined
             ? { configRevision: expectedConfigRevision }
             : {}),
@@ -759,7 +822,7 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
         leaseBy: expectedLeaseBy,
         deleting: { $ne: true },
         leaseUntil: { $gt: new Date() },
-        ...(requireEnabled ? { enabled: true } : {}),
+        ...(requireEnabled ? { $and: [RESUMABLE_SCHEDULE_FILTER] } : {}),
         ...(expectedConfigRevision !== undefined ? { configRevision: expectedConfigRevision } : {}),
       },
       { $unset: { leaseUntil: 1, leaseBy: 1 } },
@@ -1475,6 +1538,8 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
    * are safe.
    */
   async function applyOverlapSkipBookkeeping(params: {
+    conversationId?: string;
+    status?: 'skipped_overlap' | 'skipped_inactive';
     scheduleId: string;
     scheduledFor: Date;
     firedAt: Date;
@@ -1486,7 +1551,11 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
     // and let an older occurrence's outcome overwrite this newer skip.
     await projectLastRun(
       params.scheduleId,
-      { status: 'skipped_overlap', firedAt: params.firedAt },
+      {
+        conversationId: params.conversationId,
+        status: params.status ?? 'skipped_overlap',
+        firedAt: params.firedAt,
+      },
       params.scheduledFor,
       revisionFilter,
     );
@@ -1706,6 +1775,18 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
         rowRevision: settled.configRevision,
         balanceSkipDisableThreshold: params.balanceSkipDisableThreshold,
       });
+    } else if (
+      effectiveParams.status === 'skipped_overlap' ||
+      effectiveParams.status === 'skipped_inactive'
+    ) {
+      await applyOverlapSkipBookkeeping({
+        status: effectiveParams.status,
+        conversationId: params.conversationId,
+        scheduleId: params.scheduleId,
+        scheduledFor: params.scheduledFor,
+        firedAt: settled.firedAt ?? firedAt,
+        rowRevision: settled.configRevision,
+      });
     } else {
       await applyTerminalBookkeeping({
         ...effectiveParams,
@@ -1723,7 +1804,10 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
     data: Partial<IScheduleRun> & {
       scheduleId: string;
       scheduledFor: Date;
-      status: Extract<ScheduleRunStatus, 'skipped_overlap' | 'skipped_balance'>;
+      status: Extract<
+        ScheduleRunStatus,
+        'skipped_overlap' | 'skipped_balance' | 'skipped_inactive'
+      >;
     },
     balanceSkipDisableThreshold?: number,
   ): Promise<void> {
@@ -1773,6 +1857,8 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
       });
     } else {
       await applyOverlapSkipBookkeeping({
+        status: data.status,
+        conversationId: data.conversationId,
         scheduleId: data.scheduleId,
         scheduledFor: data.scheduledFor,
         firedAt: rowFiredAt,
@@ -1858,7 +1944,14 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
     return ScheduleRun()
       .find({
         status: {
-          $in: ['success', 'error', 'interrupted', 'skipped_balance', 'skipped_overlap'],
+          $in: [
+            'success',
+            'error',
+            'interrupted',
+            'skipped_balance',
+            'skipped_overlap',
+            'skipped_inactive',
+          ],
         },
         bookkept: false,
         firedAt: { $lt: olderThan },
@@ -1889,8 +1982,10 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
         rowRevision: run?.configRevision,
         balanceSkipDisableThreshold: params.balanceSkipDisableThreshold,
       });
-    } else if (params.status === 'skipped_overlap') {
+    } else if (params.status === 'skipped_overlap' || params.status === 'skipped_inactive') {
       await applyOverlapSkipBookkeeping({
+        status: params.status,
+        conversationId: params.conversationId,
         scheduleId: params.scheduleId,
         scheduledFor: params.scheduledFor,
         firedAt,
@@ -1941,6 +2036,7 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
   async function markScheduleDeleting(
     id: string,
     userId: string | Types.ObjectId,
+    scope?: ScheduleAccessScope,
   ): Promise<ISchedule | null> {
     // Keep leaseUntil/leaseBy so a fire that already leased this occurrence still
     // serializes against a re-claim while it unwinds. Only clear nextRunAt
@@ -1956,7 +2052,7 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
     // stale workers), and it lets the caller re-drive the rest of the teardown.
     return Schedule()
       .findOneAndUpdate(
-        { id, user: userId },
+        { id, user: userId, ...scopeFilter(scope) },
         {
           $set: { enabled: false, deleting: true, claimToken: randomUUID() },
           $unset: { nextRunAt: 1 },
@@ -2156,10 +2252,12 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
     id: string,
     nextRunAt: Date,
     expectedConfigRevision?: number,
+    scope?: ScheduleAccessScope,
   ): Promise<boolean> {
     const result = await Schedule().updateOne(
       {
         id,
+        ...scopeFilter(scope),
         enabled: true,
         deleting: { $ne: true },
         nextRunAt: { $exists: false },

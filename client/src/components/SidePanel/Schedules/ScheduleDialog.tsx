@@ -21,6 +21,7 @@ import {
 import {
   PermissionBits,
   isCronCadence,
+  isOnceCadence,
   nextRunInstants,
   scheduleFrequencies,
   isValidCronExpression,
@@ -85,6 +86,7 @@ type ScheduleFormValues = {
   /** Only read when `frequency` is `cron`; held across a switch away and back so a
    *  user who tries a preset does not lose the expression they typed. */
   expression: string;
+  at: string;
   timezone: string;
 };
 
@@ -94,6 +96,7 @@ const FREQUENCY_LABELS: Record<ScheduleFrequency, TranslationKeys> = {
   weekdays: 'com_ui_schedule_weekdays',
   weekly: 'com_ui_schedule_weekly',
   cron: 'com_ui_schedule_cron',
+  once: 'com_ui_schedule_once',
 };
 
 /** Every weekday at 09:00: a recognisable starting point to edit rather than an
@@ -124,10 +127,12 @@ const getDefaultValues = (schedule?: TSchedule): ScheduleFormValues => {
       minute: 0,
       daysOfWeek: DEFAULT_WEEKLY_DAYS,
       expression: DEFAULT_CRON,
+      at: '',
       timezone: localTimezone,
     };
   }
   const identity = {
+    at: isOnceCadence(schedule.cadence) ? schedule.cadence.at : '',
     name: schedule.name,
     prompt: schedule.prompt,
     agent_id: schedule.agent_id,
@@ -137,6 +142,16 @@ const getDefaultValues = (schedule?: TSchedule): ScheduleFormValues => {
     timezone: schedule.timezone || localTimezone,
   };
   const cadence = schedule.cadence;
+  if (isOnceCadence(cadence)) {
+    return {
+      ...identity,
+      frequency: 'once',
+      hour: 9,
+      minute: 0,
+      daysOfWeek: DEFAULT_WEEKLY_DAYS,
+      expression: DEFAULT_CRON,
+    };
+  }
   if (isCronCadence(cadence)) {
     // A cron row carries no hour or minute of its own, so the structured pickers keep
     // their defaults: switching away from Custom then lands on a sensible time rather
@@ -164,10 +179,13 @@ const getDefaultValues = (schedule?: TSchedule): ScheduleFormValues => {
 
 type CadenceFormValues = Pick<
   ScheduleFormValues,
-  'frequency' | 'hour' | 'minute' | 'daysOfWeek' | 'expression'
+  'frequency' | 'hour' | 'minute' | 'daysOfWeek' | 'expression' | 'at'
 >;
 
 const buildCadence = (values: CadenceFormValues): TScheduleCadence => {
+  if (values.frequency === 'once') {
+    return { frequency: 'once', at: values.at };
+  }
   if (values.frequency === 'cron') {
     return { frequency: 'cron', expression: values.expression.trim() };
   }
@@ -224,6 +242,7 @@ export default function ScheduleDialog({
   const minute = watch('minute');
   const daysOfWeek = watch('daysOfWeek');
   const expression = watch('expression');
+  const at = watch('at');
   const timezone = watch('timezone');
   const selectedAgentId = watch('agent_id');
   /** Not named `hour12`: that is already the form's own 12-hour clock VALUE (1-12).
@@ -302,10 +321,12 @@ export default function ScheduleDialog({
 
   const frequencyOptions = useMemo(
     () =>
-      scheduleFrequencies.map((value) => ({
-        value,
-        label: localize(FREQUENCY_LABELS[value]),
-      })),
+      scheduleFrequencies
+        .filter((value) => value !== 'once')
+        .map((value) => ({
+          value,
+          label: localize(FREQUENCY_LABELS[value]),
+        })),
     [localize],
   );
 
@@ -489,9 +510,9 @@ export default function ScheduleDialog({
   /** Read by the summary, the preview and the interval floor, each of which walks
    *  croner. Memoized so a name or prompt keystroke does not re-derive all three. */
   const previewCadence = useMemo(
-    () => buildCadence({ frequency, hour, minute, daysOfWeek, expression }),
+    () => buildCadence({ frequency, hour, minute, daysOfWeek, expression, at }),
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `daysKey` IS `daysOfWeek`
-    [frequency, hour, minute, daysKey, expression],
+    [frequency, hour, minute, daysKey, expression, at],
   );
 
   /** Weekly with nothing selected is expressible in the form but not on the wire (the
@@ -802,7 +823,7 @@ export default function ScheduleDialog({
               )}
             />
 
-            <fieldset className="space-y-2">
+            <fieldset className="space-y-2" hidden={frequency === 'once'}>
               <legend>
                 <Label id="schedule-frequency-label" className="text-sm font-medium">
                   {localize('com_ui_schedule_frequency')}
@@ -865,10 +886,11 @@ export default function ScheduleDialog({
             ) : (
               <div
                 className={cn(
-                  'grid gap-4',
+                  frequency === 'once' ? 'gap-4' : 'grid gap-4',
                   // Three cells in weekly (day, time, zone) share one row at md.
                   frequency === 'weekly' ? 'md:grid-cols-3' : 'md:grid-cols-2',
                 )}
+                hidden={frequency === 'once'}
               >
                 {frequency === 'weekly' && (
                   <fieldset className="space-y-2">

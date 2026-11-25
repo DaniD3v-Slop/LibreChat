@@ -3,7 +3,7 @@ import { useAtomValue } from 'jotai';
 import { useRecoilValue } from 'recoil';
 import { useForm } from 'react-hook-form';
 import { useParams } from 'react-router-dom';
-import { Constants } from 'librechat-data-provider';
+import { Constants, PermissionTypes, Permissions } from 'librechat-data-provider';
 import { ChatScreen, QueuedTurnPortalProvider } from '@librechat/chat/components';
 import {
   submissionByIndex,
@@ -19,6 +19,8 @@ import { AssistantsMapContext, useAssistantsMapContext } from '~/Providers/Assis
 import { AgentsMapContext, useAgentsMapContext } from '~/Providers/AgentsMapContext';
 import { ComposerPreferencesContext } from '~/Providers/ComposerPreferencesContext';
 import Footer, { useLandingFooter, useConfiguredFooter } from './Footer';
+import { useGetStartupConfig, useSchedulesQuery } from '~/data-provider';
+import useRunSync from '~/components/SidePanel/Schedules/useRunSync';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import ApprovalProvider from './Messages/Content/ApprovalContext';
 import { preloadMessages, renderMessages } from './Messages/load';
@@ -26,8 +28,8 @@ import ConversationStarters from './Input/ConversationStarters';
 import ProjectBadge from '~/components/Projects/ProjectBadge';
 import { OwnerTextProvider } from './Messages/PrivateText';
 import { TargetContext } from '~/Providers/TargetContext';
+import { useAddedResponse, useHasAccess } from '~/hooks';
 import useTarget from '~/hooks/Chat/target';
-import { useAddedResponse } from '~/hooks';
 import Presentation from './Presentation';
 import WelcomeBackdrop from './Backdrop';
 import ChatForm from './Input/ChatForm';
@@ -118,6 +120,28 @@ function ChatViewPane({
 
   const fileMap = useFileMapContext();
   const chat = useChatContext();
+  const { data: startupConfig } = useGetStartupConfig();
+  const schedulesConfig = startupConfig?.interface?.schedules;
+  const canUseSchedules = useHasAccess({
+    permissionType: PermissionTypes.SCHEDULES,
+    permission: Permissions.USE,
+  });
+  const schedulesEnabled =
+    index === 0 &&
+    canUseSchedules &&
+    schedulesConfig != null &&
+    schedulesConfig !== false &&
+    !(typeof schedulesConfig === 'object' && schedulesConfig.use === false);
+  const { data: schedulesData, dataUpdatedAt: schedulesUpdatedAt } = useSchedulesQuery({
+    enabled: schedulesEnabled,
+  });
+  /** Pulls a scheduled run into the open chat when it lands in this conversation. */
+  useRunSync(
+    schedulesEnabled ? schedulesData?.schedules : undefined,
+    schedulesUpdatedAt,
+    conversationId,
+    chat.isSubmitting,
+  );
   const target = useTarget(chat.conversation, chat.setConversation);
   const agentsMap = useAgentsMapContext();
   const assistantsMap = useAssistantsMapContext();

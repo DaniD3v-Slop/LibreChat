@@ -8,6 +8,11 @@ import ChatView from '../ChatView';
 /** The app registers its parts host at boot (App.jsx); the child's list reads it. */
 import '~/Providers/MessagePartsHostContext';
 
+jest.mock('~/components/SidePanel/Schedules/useRunSync', () => ({
+  __esModule: true,
+  default: jest.fn(),
+}));
+
 let mockConversation: Record<string, unknown> | null;
 
 jest.mock('~/hooks/AuthContext', () => ({
@@ -39,6 +44,8 @@ jest.mock('@librechat/client', () => ({
 jest.mock('librechat-data-provider', () => ({
   ...jest.requireActual('librechat-data-provider'),
   Constants: { NEW_CONVO: 'new', SEARCH: 'search' },
+  PermissionTypes: { SCHEDULES: 'SCHEDULES' },
+  Permissions: { USE: 'USE' },
   buildTree: ({ messages }: { messages: unknown[] }) => messages,
 }));
 
@@ -59,6 +66,7 @@ jest.mock('@librechat/chat/react', () => {
 });
 
 jest.mock('~/hooks', () => ({
+  useHasAccess: () => false,
   useAddedResponse: () => ({}),
   useLocalize: () => (key: string) => key,
 }));
@@ -84,6 +92,8 @@ jest.mock('~/hooks/Chat/target', () => ({
 jest.mock('~/data-provider', () => ({
   useCachedMessages: () => ({ data: null }),
   useProjectQuery: () => ({ data: undefined }),
+  useGetStartupConfig: () => ({ data: undefined }),
+  useSchedulesQuery: () => ({}),
 }));
 
 jest.mock('../Input/ConversationStarters', () => () => null);

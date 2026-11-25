@@ -901,6 +901,7 @@ export enum AgentCapabilities {
   skills = 'skills',
   memory = 'memory',
   ask_user_question = 'ask_user_question',
+  schedule_chat = 'schedule_chat',
   tools = 'tools',
   /** @deprecated Retained for legacy configuration. Chain authoring is retired. */
   chain = 'chain',

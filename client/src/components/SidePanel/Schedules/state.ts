@@ -27,6 +27,12 @@ const RUN_TONE: Record<ScheduleRunStatus, { tone: ScheduleRowTone; label: Transl
   started: { tone: 'running', label: 'com_ui_schedule_run_started' },
   skipped_overlap: { tone: 'running', label: 'com_ui_schedule_run_skipped' },
   skipped_balance: { tone: 'warning', label: 'com_ui_schedule_run_skipped' },
+  skipped_inactive: { tone: 'running', label: 'com_ui_schedule_skipped_inactive' },
+};
+
+const DONE_LABEL: Record<'completed' | 'expired', TranslationKeys> = {
+  completed: 'com_ui_schedule_completed',
+  expired: 'com_ui_schedule_expired',
 };
 
 /**
@@ -40,6 +46,10 @@ export function scheduleRowState(
   schedule: Pick<TSchedule, 'enabled' | 'disabledReason' | 'lastRun'>,
   localize: LocalizeFunction,
 ): ScheduleRowState {
+  // A one-time schedule that ran or passed its time has finished, not failed.
+  if (schedule.disabledReason === 'completed' || schedule.disabledReason === 'expired') {
+    return { tone: 'paused', label: localize(DONE_LABEL[schedule.disabledReason]) };
+  }
   if (schedule.disabledReason != null) {
     return { tone: 'error', label: localize('com_ui_schedule_paused') };
   }

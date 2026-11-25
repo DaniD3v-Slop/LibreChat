@@ -4,6 +4,13 @@ import { ChatSettingsContext, defaultChatSettings } from '~/Providers/ChatSettin
 import { render, screen } from 'test/layout-test-utils';
 import ChatView from '../ChatView';
 
+let mockSchedulesConfig: boolean | { use?: boolean } | undefined = false;
+let mockSchedulesAccess = false;
+const mockSchedulesQuery = jest.fn<
+  { data: undefined; dataUpdatedAt: number },
+  [{ enabled: boolean }]
+>(() => ({ data: undefined, dataUpdatedAt: 0 }));
+
 const mockParams = jest.fn();
 const mockConversation = jest.fn();
 const mockChatFormProps = jest.fn();
@@ -28,6 +35,8 @@ jest.mock('~/hooks/Chat/target', () => ({
 jest.mock('~/data-provider', () => ({
   useCachedMessages: () => ({ data: null }),
   useProjectQuery: () => ({ data: undefined }),
+  useGetStartupConfig: () => ({ data: { interface: { schedules: mockSchedulesConfig } } }),
+  useSchedulesQuery: (options: { enabled: boolean }) => mockSchedulesQuery(options),
 }));
 
 /**
@@ -52,6 +61,7 @@ jest.mock('@librechat/chat/react', () => {
 });
 
 jest.mock('~/hooks', () => ({
+  useHasAccess: () => mockSchedulesAccess,
   useLocalize: () => (key: string) => (key === 'com_ui_new_chat' ? 'New chat' : key),
   useAddedResponse: () => ({}),
 }));
@@ -89,9 +99,26 @@ jest.mock('~/components/Projects/ProjectBadge', () => ({
 
 describe('ChatView page heading', () => {
   beforeEach(() => {
+    mockSchedulesAccess = false;
+    mockSchedulesConfig = false;
+    mockSchedulesQuery.mockClear();
     mockParams.mockReturnValue({});
     mockConversation.mockReturnValue(null);
   });
+
+  test.each([
+    { config: true, permission: true, enabled: true },
+    { config: false, permission: true, enabled: false },
+    { config: true, permission: false, enabled: false },
+  ])(
+    'observes schedules without the panel only when enabled=$enabled',
+    ({ config, permission, enabled }) => {
+      mockSchedulesConfig = config;
+      mockSchedulesAccess = permission;
+      render(<ChatView />);
+      expect(mockSchedulesQuery).toHaveBeenLastCalledWith({ enabled });
+    },
+  );
 
   test('exposes a single h1 to assistive technology', () => {
     render(<ChatView />);

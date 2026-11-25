@@ -130,6 +130,7 @@ import { createConfiguredContentInspector, inspectContent } from '../protection/
 import { assertAgentAttachmentLimits, isModelBoundAttachmentFile } from './attachments';
 import { narrowScheduledMCPTools } from '~/schedules/authorization/execution';
 import { assertModelBoundContent } from '../middleware/modelBoundContent';
+import { expandScheduleToolNames, isScheduleWriteTool } from './schedule';
 import { resolveAttachedWorkspaceReadFileLines } from '~/code/workspace';
 import { isValidInstructionsPromptLink } from './instructions/linked';
 import { PARTIAL_RESOLVED_CONVERSATION } from './conversationSymbols';
@@ -143,6 +144,7 @@ import { resolveToolRoleGrants } from '~/tools/rolePermissions';
 import { createRequestAgentExecutionContext } from './runtime';
 import { resolveTurnDeliveryRouting } from './files/delivery';
 import { filterFilesByEndpointRuntimeConfig } from '~/files';
+import { isScheduleFireRequest } from '~/schedules/trigger';
 import { isFatalAgentInitializationError } from './errors';
 import { assertToolOptionsWithinLimits } from './options';
 import { hasActiveFilePolicy } from '../protection/files';
@@ -152,6 +154,7 @@ import { applyBackgroundToolCalls } from './background';
 import { admitCurrentFileBudget } from './files/budget';
 import { allowsFileResource } from '~/files/consumers';
 import { applyDeferredToolLoading } from './deferral';
+import { isValidTimezone } from '~/schedules/cadence';
 import { applyTurnDelivery } from './files/delivery';
 import { generateArtifactsPrompt } from '~/prompts';
 import { getAgentInferencePolicy } from './input';
@@ -2256,7 +2259,14 @@ export async function initializeAgent(
       provider,
       agentId: agent.id,
       // Under a schedule's grant, only the MCP tools its owner allowed are loaded at all.
-      tools: narrowScheduledMCPTools(params.req, agent.id, tools),
+      // A scheduled run may read its schedules but never write them.
+      tools: narrowScheduledMCPTools(
+        params.req,
+        agent.id,
+        isScheduleFireRequest(params.req)
+          ? expandScheduleToolNames(tools).filter((name) => !isScheduleWriteTool(name))
+          : tools,
+      ),
       model: agent.model,
       tool_options: agent.tool_options,
       tool_resources: runtimeToolResources,
@@ -2663,6 +2673,32 @@ export async function initializeAgent(
         `[initializeAgent] Agent ${agent.id} links instructions to group ${instructionsPromptLink.groupId} but no resolver was provided; continuing with empty instructions`,
       );
     }
+  }
+
+  const hasSchedulingTimeTools = ['create_schedule', 'update_schedule'].some(
+    (name) =>
+      toolRegistry?.has(name) === true ||
+      toolDefinitions?.some((definition) => definition.name === name) === true ||
+      structuredTools?.some((tool) => tool.name === name) === true,
+  );
+  const schedulingTimezone = runtime.requestBody.timezone;
+  if (
+    hasSchedulingTimeTools &&
+    !isScheduleFireRequest(params.req) &&
+    typeof schedulingTimezone === 'string' &&
+    !/^[+-]/.test(schedulingTimezone) &&
+    isValidTimezone(schedulingTimezone)
+  ) {
+    appendAdditionalInstructions(
+      agent,
+      replaceSpecialVars({
+        text:
+          'Current local date and time: {{current_datetime}}. Resolve relative scheduling dates such as tomorrow from this date. ' +
+          "Schedule times use the user's timezone automatically. Do not ask for their timezone.",
+        now: runtime.turnStartedAt,
+        timezone: schedulingTimezone,
+      }),
+    );
   }
 
   if (agent.instructions && agent.instructions !== '') {

@@ -5895,6 +5895,7 @@ export class RedisJobStore implements IJobStoreV2 {
         ? parseInt(data.scheduleConfigRevision, 10)
         : undefined,
       scheduleManual: data.scheduleManual != null ? data.scheduleManual === '1' : undefined,
+      scheduleSteered: data.scheduleSteered === '1' ? true : undefined,
       scheduleOutcome:
         data.scheduleOutcome === 'success' ||
         data.scheduleOutcome === 'error' ||

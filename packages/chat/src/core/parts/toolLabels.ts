@@ -15,6 +15,7 @@ export type ToolFriendlyNameKey =
   | 'com_ui_tool_name_image_gen'
   | 'com_ui_tool_name_image_edit'
   | 'com_ui_tool_name_file_search'
+  | 'com_ui_tool_name_schedule_chat'
   | 'com_ui_tool_name_code_analysis'
   | 'com_ui_tool_name_ask_user_question'
   | 'com_ui_tool_name_create_file'
@@ -41,6 +42,7 @@ export function getToolFriendlyNameKeys(): Readonly<Record<string, ToolFriendlyN
     file_search: 'com_ui_tool_name_file_search',
     code_interpreter: 'com_ui_tool_name_code_analysis',
     retrieval: 'com_ui_tool_name_file_search',
+    schedule_chat: 'com_ui_tool_name_schedule_chat',
     ask_user_question: 'com_ui_tool_name_ask_user_question',
     create_file: 'com_ui_tool_name_create_file',
     set_memory: 'com_ui_tool_name_set_memory',

@@ -356,6 +356,7 @@ describe('RedisJobStore', () => {
       scheduledFor: '2026-08-17T12:00:00.000Z',
       scheduleConfigRevision: 4,
       scheduleManual: false,
+      scheduleSteered: true,
       scheduleOutcome: 'interrupted',
       scheduleOutcomeError: 'Schedule deleted',
       scheduleMCPFailure: {
@@ -473,6 +474,7 @@ describe('RedisJobStore', () => {
       scheduledFor: '2026-08-17T12:00:00.000Z',
       scheduleConfigRevision: 4,
       scheduleManual: false,
+      scheduleSteered: true,
       scheduleOutcome: 'interrupted',
       scheduleOutcomeError: 'Schedule deleted',
       scheduleMCPFailure: {
@@ -537,6 +539,7 @@ describe('RedisJobStore', () => {
       scheduledFor: '2026-08-17T12:00:00.000Z',
       scheduleConfigRevision: '4',
       scheduleManual: '0',
+      scheduleSteered: '1',
       scheduleOutcome: 'interrupted',
       scheduleOutcomeError: 'Schedule deleted',
       scheduleMCPFailure: JSON.stringify({

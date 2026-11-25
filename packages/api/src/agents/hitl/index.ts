@@ -16,3 +16,4 @@ export * from './controller';
 export * from './metadata';
 export * from './capture';
 export * from './context';
+export * from './scheduling';

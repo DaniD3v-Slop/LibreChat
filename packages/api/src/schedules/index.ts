@@ -23,3 +23,4 @@ export * from './authorization/runtime';
 export * from './authorization/policy';
 
 export * from './authorization/continuation';
+export * from './continuation';

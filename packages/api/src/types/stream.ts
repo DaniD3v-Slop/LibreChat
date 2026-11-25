@@ -94,6 +94,8 @@ export interface GenerationJobMetadata {
   scheduleManual?: boolean;
   /** Original schedule root for a legacy completion, never occurrence bookkeeping. */
   scheduleMCPCompletion?: ScheduledMCPIdentity;
+  /** A trusted schedule injected instructions into this generation. */
+  scheduleSteered?: boolean;
   /** Intended terminal classification retained when Mongo outcome persistence
    * fails. The scheduler reconciler consumes this evidence before clearing the job. */
   scheduleOutcome?: 'success' | 'error' | 'interrupted' | 'skipped_balance';

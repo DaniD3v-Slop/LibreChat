@@ -110,6 +110,11 @@ import {
   resolveRecursionLimit,
 } from '~/agents/config';
 import {
+  resolveToolApprovalPolicy,
+  exemptScheduleReadsFromApproval,
+  exemptAskUserQuestionFromApproval,
+} from '~/agents/hitl/policy';
+import {
   isSteeringSupported,
   isSteerPreemptSupported,
   isSteerTerminalContinuationSupported,
@@ -119,11 +124,14 @@ import {
   createAskUserQuestionTool,
 } from '~/agents/hitl/askUserQuestionTool';
 import {
+  agentGraphRequestsScheduleChat,
+  agentGraphCarriesScheduleTools,
+} from '~/agents/hitl/admission';
+import {
   createRunFileTools,
   eventOnlyRunFileTools,
   isRunFileSharingSupported,
 } from './files/runtime';
-import { resolveToolApprovalPolicy, exemptAskUserQuestionFromApproval } from '~/agents/hitl/policy';
 import { applyCustomHandoffPromptKeyCompatibility } from '~/agents/handoffPromptKeyCompatibility';
 import { stripIntentFromToolRegistry, stripIntentFromToolDefinitions } from '~/agents/intent';
 import { createAgentToolApprovalSession, bindRunToolApprovalSession } from './hitl/modes';
@@ -143,6 +151,7 @@ import { prepareQueuedCodeFileContext } from '~/files/code/queued';
 import { getBuiltInBaseURL } from '~/endpoints/openai/initialize';
 import { getProviderConfig } from '~/endpoints/config/providers';
 import { createSafeUser, createSafeAgent } from '~/utils/env';
+import { SCHEDULE_WRITE_TOOL_NAMES } from '~/agents/schedule';
 import { shareDeferredDefinitions } from '~/agents/deferral';
 import { buildToolApprovalHooks } from '~/agents/hitl/hooks';
 import { getAgentCheckpointer } from '~/agents/checkpointer';
@@ -2349,6 +2358,7 @@ export async function createRun({
   scheduledMCPExecution,
   recordScheduledMCPDenial,
   toolApprovalAllows,
+  scheduleChatApprovalHook,
   toolInputValidationErrors,
   sessionStartSource,
   loadSdkRuntime,
@@ -2508,6 +2518,8 @@ export async function createRun({
   reviewedToolApprovals?: ReviewedToolApprovals;
   scheduledMCPExecution?: ScheduleMCPExecution;
   recordScheduledMCPDenial?: (error: ScheduledMCPPolicyError) => Promise<boolean>;
+  /** Fresh server-owned generation check before schedule creation may request approval. */
+  scheduleChatApprovalHook?: HookCallback<'PreToolUse'>;
   /** Plugin-hook SessionStart lifecycle source: 'startup' (default) or 'resume' on HITL-rebuild paths. */
   sessionStartSource?: string;
   /** Request-scoped tool input failures consumed by the completion handler. */
@@ -3004,7 +3016,9 @@ export async function createRun({
     endpoint: agentsEndpointConfig?.toolApproval,
     attachedCodeEnvironment: attachedCodeEnvironmentAgentIds.size > 0,
     ownerApproval: scheduledMCPExecution?.mayAsk === true,
+    scheduleChat: agentGraphRequestsScheduleChat(agents),
   });
+  const schedules = agentGraphCarriesScheduleTools(agents);
   // Every caller needs the policy hooks, including API-key ingresses. Only
   // AgentClient supports pause/resume; the SDK blocks `ask` without HITL enabled.
   // Keep the checkpointer and humanInTheLoop switch exclusive to those callers.
@@ -3017,7 +3031,10 @@ export async function createRun({
   );
   const effectiveToolApprovalPolicy = () =>
     exemptAskUserQuestionFromApproval(
-      buildEffectiveToolApprovalPolicy(toolApprovalPolicy, mcpToolAliases, toolApprovalAllows),
+      exemptScheduleReadsFromApproval(
+        buildEffectiveToolApprovalPolicy(toolApprovalPolicy, mcpToolAliases, toolApprovalAllows),
+        schedules,
+      ),
       ASK_USER_QUESTION_TOOL_NAME,
     );
   const nativeEditFileAgentIds = collectNativeEditFileAgentIds(agents);
@@ -3062,6 +3079,15 @@ export async function createRun({
           tenantId: tenantId ?? user?.tenantId,
           appConfig,
         })),
+      ...(scheduleChatApprovalHook == null
+        ? []
+        : [
+            {
+              hook: scheduleChatApprovalHook,
+              matcher:
+                '^(create_schedule|list_schedules|get_schedule|update_schedule|delete_schedule)$',
+            },
+          ]),
       ...(attachedCodeEnvironmentAgentIds.size > 0
         ? [
             {
@@ -3305,6 +3331,7 @@ export async function createRun({
         Constants.EXECUTE_CODE,
         Constants.BASH_TOOL,
         ASK_USER_QUESTION_TOOL_NAME,
+        ...SCHEDULE_WRITE_TOOL_NAMES,
         /**
          * Background-capable tools: eager execution could launch the detached
          * task with speculative/partial args before the final tool call, and a

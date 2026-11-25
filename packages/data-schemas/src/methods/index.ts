@@ -217,7 +217,8 @@ import {
   type DeleteSkillCleanupStep,
   type DeleteSkillResult,
 } from './skill';
-import { createScheduleMethods, type ScheduleMethods } from './schedule';
+import { createScheduleMethods } from './schedule';
+import type { ScheduleMethods, ScheduleAccessScope } from './schedule';
 import {
   createAgentQueuedTurnMethods,
   AgentQueuedTurnCapacityError,
@@ -729,6 +730,7 @@ export type {
   AgentEventActorReceiptMetric,
   AgentEventActorReceiptStorageMetrics,
   ScheduleMethods,
+  ScheduleAccessScope,
   AgentMethods,
   AgentGraphNode,
   AgentGraphAccess,

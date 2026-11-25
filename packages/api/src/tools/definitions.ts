@@ -23,6 +23,7 @@ import type { MCPToolAlias, ToolDefinition } from './classification';
 import { resolveJsonSchemaRefs, normalizeJsonSchema, sanitizeGeminiSchema } from '~/mcp/zod';
 import { DEFAULT_LOOKUP_CONCURRENCY } from '~/utils/concurrency';
 import { mapWithConcurrency } from '~/utils/promise';
+import { expandScheduleToolNames } from '~/agents/schedule';
 import { buildToolClassification } from './classification';
 import { getToolDefinition } from './registry/definitions';
 import { toolkitExpansion } from './toolkits/mapping';
@@ -290,7 +291,7 @@ export async function loadToolDefinitions(
   let expectedMCPToolCount = 0;
   let resolvedMCPToolCount = 0;
 
-  for (const toolName of tools) {
+  for (const toolName of expandScheduleToolNames(tools)) {
     if (toolName === GitHubCompareToolName && params.githubCompareEnabled !== true) {
       continue;
     }

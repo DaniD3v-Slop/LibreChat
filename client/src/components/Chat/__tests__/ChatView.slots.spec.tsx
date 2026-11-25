@@ -25,6 +25,8 @@ jest.mock('~/hooks/Chat/target', () => ({
 jest.mock('~/data-provider', () => ({
   useCachedMessages: () => ({ data: null }),
   useProjectQuery: () => ({ data: undefined }),
+  useGetStartupConfig: () => ({ data: undefined }),
+  useSchedulesQuery: () => ({}),
 }));
 
 jest.mock('@librechat/chat/react', () => {
@@ -55,6 +57,7 @@ jest.mock('@librechat/chat/components', () => ({
 jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string) => key,
   useAddedResponse: () => ({}),
+  useHasAccess: () => false,
 }));
 
 jest.mock('../Presentation', () => ({

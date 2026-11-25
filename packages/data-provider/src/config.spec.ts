@@ -7,6 +7,8 @@ import {
   BASE_ONLY_CONFIG_SECTIONS,
   DEPLOYMENT_ONLY_CONFIG_PATHS,
   getAllowedAddressEntryIssue,
+  AgentCapabilities,
+  defaultAgentCapabilities,
   DEFAULT_RETAINED_ANSWER_TOKENS,
   DEFAULT_HISTORY_CACHE_MAX_BYTES,
   DEFAULT_MAX_RETAINED_TOOL_COUNT_CHARS,
@@ -186,6 +188,15 @@ describe('stream keepalive interval', () => {
 
   it.each([1, 999])('rejects a sub-second interval of %p ms', (streamKeepaliveIntervalMs) => {
     expect(agentsEndpointSchema.safeParse({ streamKeepaliveIntervalMs }).success).toBe(false);
+  });
+});
+
+describe('schedule_chat capability', () => {
+  it('requires explicit opt-in through the capabilities list', () => {
+    expect(defaultAgentCapabilities).not.toContain(AgentCapabilities.schedule_chat);
+    expect(agentsEndpointSchema.parse({ capabilities: ['schedule_chat'] }).capabilities).toEqual([
+      AgentCapabilities.schedule_chat,
+    ]);
   });
 });
 

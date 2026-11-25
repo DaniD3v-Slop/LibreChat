@@ -11,6 +11,7 @@ import {
   EVENT_ACTOR_DETACHED_COMPLETION_TYPE,
 } from './detachedAction';
 import { createAgentTriggerEnvelope, getAgentTriggerIdempotencyKey } from './envelope';
+import { captureScheduleFireContext } from '~/schedules/trigger';
 
 describe('trusted new conversation reservation', () => {
   it.each([
@@ -217,6 +218,7 @@ describe('createAgentTriggerExecutionHost fire adapter', () => {
       agentTrigger: {
         version: envelope.version,
         deliveryId: envelope.deliveryId,
+        target: { agentId: envelope.target.agentId },
         event: {
           id: envelope.event.id,
           type: envelope.event.type,
@@ -1221,4 +1223,110 @@ describe('createAgentTriggerExecutionHost steer adapter', () => {
       });
     });
   });
+});
+
+describe('scheduled continuation and steering context', () => {
+  const scheduled = {
+    id: 'occurrence-1',
+    type: 'schedule.occurrence',
+    occurredAt: 100,
+    source: { id: 'schedule-1', type: 'schedule' },
+  };
+
+  it('delivers a continuation as a scheduled message with attachments', async () => {
+    const fetcher = fetchMock(async () =>
+      response({
+        status: 'started',
+        conversationId: 'conversation-1',
+        streamId: 'conversation-1',
+        generationCreatedAt: 101,
+      }),
+    );
+    const original = createContinueEnvelope();
+    const envelope = createAgentTriggerEnvelope({
+      ...original,
+      principal: { id: original.principal.userId, tenantId: original.principal.tenantId },
+      event: scheduled,
+      run: {
+        timezone: 'Europe/Vienna',
+        files: [{ file_id: 'file-1' }],
+        metadata: { manual: false, configRevision: 4 },
+      },
+    });
+    const host = createAgentTriggerExecutionHost(deps(fetcher));
+    await host.dispatch(envelope);
+    const body = JSON.parse(String(fetcher.mock.calls[0][1]?.body));
+    expect(body.agentTrigger).toMatchObject({
+      event: scheduled,
+      target: { agentId: envelope.target.agentId },
+      metadata: { manual: false, configRevision: 4 },
+    });
+    expect(body.files).toEqual([{ file_id: 'file-1' }]);
+    expect(body.timezone).toBe('Europe/Vienna');
+    expect(body.conversationId).toBe('conversation-1');
+    expect(body).not.toHaveProperty('newConversationId');
+    // The normal chat route captures these exact fields before its schedule-live fence.
+    expect(captureScheduleFireContext({ _isAgentTrigger: true, body })).toEqual({
+      agentId: envelope.target.agentId,
+      scheduleId: scheduled.source.id,
+      scheduledFor: new Date(scheduled.occurredAt).toISOString(),
+      manual: false,
+      configRevision: 4,
+    });
+    expect(body.scheduleId).toBe(scheduled.source.id);
+    expect(body.scheduleConfigRevision).toBe(4);
+  });
+
+  it('delivers a steer with schedule provenance and attachments', async () => {
+    const fetcher = fetchMock(async () =>
+      response(
+        {
+          status: 'queued',
+          conversationId: 'conversation-1',
+          steerId: 'steer-1',
+          position: 1,
+          preempt: true,
+          generationProtocolVersion: 2,
+        },
+        { status: 202 },
+      ),
+    );
+    const original = createSteerEnvelope();
+    const envelope = createAgentTriggerEnvelope({
+      ...original,
+      principal: { id: original.principal.userId, tenantId: original.principal.tenantId },
+      event: scheduled,
+      run: { files: [{ file_id: 'file-1' }], metadata: { manual: true } },
+    });
+    await createAgentTriggerExecutionHost(deps(fetcher)).dispatch(envelope);
+    const body = JSON.parse(String(fetcher.mock.calls[0][1]?.body));
+    expect(body.agentTrigger).toMatchObject({
+      event: scheduled,
+      target: { agentId: envelope.target.agentId },
+      metadata: { manual: true },
+    });
+    expect(body.files).toEqual([{ file_id: 'file-1' }]);
+  });
+
+  it.each(['NO_ACTIVE_RUN', 'RUN_REPLACED'])(
+    'records %s as a skipped scheduled steer',
+    async (code) => {
+      const original = createSteerEnvelope();
+      const envelope = createAgentTriggerEnvelope({
+        ...original,
+        principal: { id: original.principal.userId, tenantId: original.principal.tenantId },
+        event: scheduled,
+      });
+      const fetcher = fetchMock(async () =>
+        response({ code }, { status: code === 'NO_ACTIVE_RUN' ? 404 : 409 }),
+      );
+      await expect(
+        createAgentTriggerExecutionHost(deps(fetcher)).dispatch(envelope),
+      ).resolves.toEqual({
+        mode: 'steer',
+        status: 'skipped',
+        conversationId: 'conversation-1',
+      });
+    },
+  );
 });

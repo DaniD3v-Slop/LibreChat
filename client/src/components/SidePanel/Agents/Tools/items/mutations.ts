@@ -22,7 +22,7 @@ function builtinTogglePatch(id: string, selected: boolean): TogglePatch {
   if (id === 'handoffs') {
     return selected ? { type: 'handoffs-remove' } : { type: 'configure' };
   }
-  if (id === 'ask_user_question') {
+  if (id === 'ask_user_question' || id === 'schedule_chat') {
     // Native tool presented as a builtin — it has no capability field; the
     // toggle edits agent.tools exactly like a plugin.
     return selected ? { type: 'tool-remove', id } : { type: 'tool-add', id };
