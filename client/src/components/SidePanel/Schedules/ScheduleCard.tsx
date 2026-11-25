@@ -15,6 +15,7 @@ import {
   useToastContext,
 } from '@librechat/client';
 import type { TSchedule, ScheduleDisabledReason } from 'librechat-data-provider';
+import type { ScheduleConversation } from './ScheduleDialog';
 import type { ImmediateScheduleMCPFailure } from './errors';
 import type { TranslationKeys } from '~/hooks';
 import type { ScheduleRowTone } from './state';
@@ -43,6 +44,7 @@ import Consent from './Consent';
 interface ScheduleCardProps {
   consentEnabled?: boolean;
   schedule: TSchedule;
+  currentConversation?: ScheduleConversation;
   /** Resolved by the panel, which holds ONE project-name lookup for the whole list —
    *  deriving it per card is O(schedules x projects) on every project-list refresh. */
   projectName?: string | null;
@@ -156,7 +158,12 @@ function TrailingState({
   );
 }
 
-export default function ScheduleCard({ schedule, projectName, consentEnabled }: ScheduleCardProps) {
+export default function ScheduleCard({
+  schedule,
+  projectName,
+  consentEnabled,
+  currentConversation,
+}: ScheduleCardProps) {
   const localize = useLocalize();
   const navigate = useNavigate();
   const lastRunKey = scheduleLastRunKey(schedule);
@@ -451,6 +458,7 @@ export default function ScheduleCard({ schedule, projectName, consentEnabled }: 
           open={editOpen}
           onOpenChange={setEditOpen}
           schedule={schedule}
+          currentConversation={currentConversation}
           triggerRef={editButtonRef as React.MutableRefObject<HTMLButtonElement | null>}
         />
       )}

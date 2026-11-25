@@ -19,10 +19,12 @@ import {
   useToastContext,
 } from '@librechat/client';
 import {
+  Constants,
   PermissionBits,
   isCronCadence,
   isOnceCadence,
   nextRunInstants,
+  scheduleTargets,
   scheduleFrequencies,
   isValidCronExpression,
   cadenceIntervalMinutes,
@@ -30,6 +32,8 @@ import {
 } from 'librechat-data-provider';
 import type {
   TSchedule,
+  TConversation,
+  ScheduleTarget,
   TCreateSchedule,
   TScheduleCadence,
   ScheduleFrequency,
@@ -66,10 +70,16 @@ import { rotateWeekFrom } from '~/utils/clock';
 import Authorize from './Authorize';
 import { cn } from '~/utils';
 
+export type ScheduleConversation = Pick<
+  TConversation,
+  'conversationId' | 'agent_id' | 'chatProjectId'
+>;
+
 interface ScheduleDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   schedule?: TSchedule;
+  currentConversation?: ScheduleConversation;
   triggerRef?: React.MutableRefObject<HTMLButtonElement | null>;
 }
 
@@ -77,6 +87,7 @@ type ScheduleFormValues = {
   name: string;
   prompt: string;
   agent_id: string;
+  target: ScheduleTarget;
   /** `''` means unscoped; the picker has no null option of its own. */
   chatProjectId: string;
   frequency: ScheduleFrequency;
@@ -88,6 +99,12 @@ type ScheduleFormValues = {
   expression: string;
   at: string;
   timezone: string;
+};
+
+const MODE_LABELS: Record<ScheduleTarget, TranslationKeys> = {
+  new: 'com_ui_schedule_mode_new',
+  continue: 'com_ui_schedule_mode_continue',
+  steer: 'com_ui_schedule_mode_steer',
 };
 
 const FREQUENCY_LABELS: Record<ScheduleFrequency, TranslationKeys> = {
@@ -121,6 +138,7 @@ const getDefaultValues = (schedule?: TSchedule): ScheduleFormValues => {
       name: '',
       prompt: '',
       agent_id: '',
+      target: 'new',
       chatProjectId: '',
       frequency: 'daily',
       hour: 9,
@@ -133,6 +151,7 @@ const getDefaultValues = (schedule?: TSchedule): ScheduleFormValues => {
   }
   const identity = {
     at: isOnceCadence(schedule.cadence) ? schedule.cadence.at : '',
+    target: schedule.target,
     name: schedule.name,
     prompt: schedule.prompt,
     agent_id: schedule.agent_id,
@@ -210,6 +229,7 @@ export default function ScheduleDialog({
   onOpenChange,
   schedule,
   triggerRef,
+  currentConversation,
 }: ScheduleDialogProps) {
   const navigate = useNavigate();
   const localize = useLocalize();
@@ -237,6 +257,21 @@ export default function ScheduleDialog({
    *  refreshed revision onto a cadence rebuilt from this stale snapshot — exactly
    *  the overwrite the fence exists to refuse. */
   const openedConfigRevision = useRef(schedule?.configRevision);
+  const destination = useRef(
+    schedule?.target !== 'new' && schedule?.conversationId
+      ? {
+          conversationId: schedule.conversationId,
+          agent_id: schedule.agent_id,
+          chatProjectId: schedule.chatProjectId,
+        }
+      : currentConversation,
+  ).current;
+  const canTargetChat = Boolean(
+    destination?.conversationId &&
+      destination.conversationId !== Constants.NEW_CONVO &&
+      destination.agent_id,
+  );
+  const target = watch('target');
   const frequency = watch('frequency');
   const hour = watch('hour');
   const minute = watch('minute');
@@ -244,7 +279,8 @@ export default function ScheduleDialog({
   const expression = watch('expression');
   const at = watch('at');
   const timezone = watch('timezone');
-  const selectedAgentId = watch('agent_id');
+  const formAgentId = watch('agent_id');
+  const selectedAgentId = target === 'new' ? formAgentId : (destination?.agent_id ?? '');
   /** Not named `hour12`: that is already the form's own 12-hour clock VALUE (1-12).
    *  This is the preference deciding whether a time is written with a meridiem. */
   const prefersMeridiem = useClockFormat();
@@ -287,7 +323,8 @@ export default function ScheduleDialog({
     fetchNextPage: fetchMoreProjects,
     isFetchingNextPage: isFetchingMoreProjects,
   } = useChatProjectPicker(open);
-  const selectedProjectId = watch('chatProjectId');
+  const formProjectId = watch('chatProjectId');
+  const selectedProjectId = target === 'new' ? formProjectId : (destination?.chatProjectId ?? '');
 
   /** Clearing the scope needs a real OPTION, not just the placeholder: with only live
    *  projects in the list, a schedule that has one could never be set back to none, and
@@ -311,7 +348,8 @@ export default function ScheduleDialog({
   /** The stored (or pinned) project can sit outside the pages loaded so far, and the
    *  combobox renders its PLACEHOLDER for an unknown name — telling the owner a scoped
    *  schedule has no project. Read that one project directly instead. */
-  const displayedProjectId = pinnedProjectId ?? (selectedProjectId || undefined);
+  const displayedProjectId =
+    (target === 'new' ? pinnedProjectId : undefined) ?? (selectedProjectId || undefined);
   const isProjectPaged = displayedProjectId != null && projectNames.has(displayedProjectId);
   const { data: fetchedProject } = useProjectQuery(isProjectPaged ? undefined : displayedProjectId);
   const projectDisplayName = (projectId: string): string =>
@@ -319,6 +357,14 @@ export default function ScheduleDialog({
     (fetchedProject?._id === projectId ? fetchedProject.name : undefined) ??
     projectId;
 
+  const modeOptions = useMemo(
+    () =>
+      (canTargetChat ? scheduleTargets : (['new'] as const)).map((value) => ({
+        value,
+        label: localize(MODE_LABELS[value]),
+      })),
+    [canTargetChat, localize],
+  );
   const frequencyOptions = useMemo(
     () =>
       scheduleFrequencies
@@ -427,6 +473,7 @@ export default function ScheduleDialog({
   const timingTouched = cadenceTouched || dirtyFields.timezone === true;
 
   const onSubmit = (values: ScheduleFormValues) => {
+    const agentId = values.target === 'new' ? values.agent_id : (destination?.agent_id ?? '');
     if (schedule) {
       // Preserve the stored cadence entirely on a pure rename (no cadence control
       // touched).
@@ -438,12 +485,20 @@ export default function ScheduleDialog({
       const payload = {
         ...(dirtyFields.name ? { name: values.name.trim() } : {}),
         ...(dirtyFields.prompt ? { prompt: values.prompt.trim() } : {}),
-        ...(dirtyFields.agent_id ? { agent_id: values.agent_id } : {}),
+        ...(dirtyFields.agent_id && values.target === 'new' ? { agent_id: values.agent_id } : {}),
+        ...(dirtyFields.target
+          ? {
+              target: values.target,
+              ...(values.target !== 'new'
+                ? { conversationId: destination?.conversationId ?? undefined, agent_id: agentId }
+                : {}),
+            }
+          : {}),
         // Explicit `null` is the only way to CLEAR the scope; omitting the field
         // leaves the stored project alone. Never sent while pinned — the server owns
         // the destination there, and echoing it back would only be a chance to
         // disagree with a pin that changed since the dialog opened.
-        ...(dirtyFields.chatProjectId && pinnedProjectId == null
+        ...(dirtyFields.chatProjectId && values.target === 'new' && pinnedProjectId == null
           ? { chatProjectId: values.chatProjectId || null }
           : {}),
         ...(cadenceTouched ? { cadence } : {}),
@@ -474,13 +529,16 @@ export default function ScheduleDialog({
     const content = {
       name: values.name.trim(),
       prompt: values.prompt.trim(),
-      agent_id: values.agent_id,
-      ...(pinnedProjectId == null && values.chatProjectId
+      agent_id: agentId,
+      ...(values.target === 'new' && pinnedProjectId == null && values.chatProjectId
         ? { chatProjectId: values.chatProjectId }
         : {}),
       cadence: buildCadence(values),
       timezone: values.timezone,
-      target: 'new' as const,
+      target: values.target,
+      ...(values.target !== 'new'
+        ? { conversationId: destination?.conversationId ?? undefined }
+        : {}),
       enabled: true,
       ...(authorizes && authorization.value && { authorization: authorization.value }),
     };
@@ -576,6 +634,7 @@ export default function ScheduleDialog({
     daysAreValid &&
     !belowFloor &&
     !isLoading &&
+    (target === 'new' || canTargetChat) &&
     // Something to allow, and nothing allowed yet: the schedule would only be refused its tools.
     !(authorizes && authorization.owed && authorization.value == null);
 
@@ -678,12 +737,15 @@ export default function ScheduleDialog({
                   <Controller
                     name="agent_id"
                     control={control}
-                    rules={{ required: localize('com_ui_field_required') }}
+                    rules={{
+                      required: target === 'new' ? localize('com_ui_field_required') : false,
+                    }}
                     render={({ field }) => (
                       <ControlCombobox
-                        selectedValue={field.value}
+                        selectedValue={selectedAgentId}
+                        disabled={target !== 'new'}
                         displayValue={
-                          agentItems.find((item) => item.value === field.value)?.label ?? ''
+                          agentItems.find((item) => item.value === selectedAgentId)?.label ?? ''
                         }
                         selectPlaceholder={localize('com_ui_select_agent')}
                         searchPlaceholder={localize('com_agents_search_name')}
@@ -712,7 +774,7 @@ export default function ScheduleDialog({
                   <Label htmlFor="schedule-project" className="text-sm font-medium">
                     {localize('com_ui_project')}
                   </Label>
-                  {pinnedProjectId != null ? (
+                  {pinnedProjectId != null && target === 'new' ? (
                     /* Pinned by the operator: there is no choice to offer, so show the
                      destination rather than a disabled control the user would keep
                      trying to open. */
@@ -733,19 +795,25 @@ export default function ScheduleDialog({
                       // for `project_required` can still be renamed or tidied up; requiring
                       // it here made that path unreachable, and an owner with no projects
                       // at all could not edit the stopped schedule.
-                      rules={
-                        requireProject && (schedule == null || schedule.enabled)
-                          ? { required: localize('com_ui_field_required') }
-                          : undefined
-                      }
+                      rules={{
+                        required:
+                          requireProject &&
+                          target === 'new' &&
+                          (schedule == null || schedule.enabled)
+                            ? localize('com_ui_field_required')
+                            : false,
+                      }}
                       render={({ field }) => (
                         <ControlCombobox
-                          selectedValue={field.value}
+                          selectedValue={selectedProjectId}
+                          disabled={target !== 'new'}
                           // Never `''` for a real id: that renders the placeholder,
                           // which reads as "No project" on a schedule that has one.
-                          displayValue={field.value ? projectDisplayName(field.value) : ''}
+                          displayValue={
+                            selectedProjectId ? projectDisplayName(selectedProjectId) : ''
+                          }
                           selectPlaceholder={localize(
-                            requireProject
+                            requireProject && target === 'new'
                               ? 'com_ui_select_project'
                               : 'com_ui_schedule_project_none',
                           )}
@@ -775,7 +843,7 @@ export default function ScheduleDialog({
                     id="schedule-project-message"
                     message={errors.chatProjectId?.message}
                   />
-                  {pinnedProjectId == null && hasMoreProjects && (
+                  {target === 'new' && pinnedProjectId == null && hasMoreProjects && (
                     <Button
                       type="button"
                       variant="link"
@@ -788,11 +856,25 @@ export default function ScheduleDialog({
                   )}
                 </div>
               </div>
-              {/* Full width, not inside the agent cell: at a third of the dialog this
-                sentence wraps an extra line and makes the identity row needlessly tall. */}
-              <p className="text-text-secondary text-xs">
-                {localize('com_ui_schedule_target_new_chat')}
-              </p>
+              <div className="flex flex-col gap-2">
+                <Label id="schedule-mode-label" variant="secondary">
+                  {localize('com_ui_schedule_mode')}
+                </Label>
+                <Controller
+                  name="target"
+                  control={control}
+                  render={({ field }) => (
+                    <Radio
+                      options={modeOptions}
+                      value={field.value}
+                      onChange={(value) => field.onChange(value as ScheduleTarget)}
+                      size="sm"
+                      wrap
+                      aria-labelledby="schedule-mode-label"
+                    />
+                  )}
+                />
+              </div>
             </div>
 
             <Controller

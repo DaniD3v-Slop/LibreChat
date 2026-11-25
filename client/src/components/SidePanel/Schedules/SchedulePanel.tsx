@@ -9,11 +9,13 @@ import ScheduleEmptyState from './ScheduleEmptyState';
 import { useSchedulesQuery } from '~/data-provider';
 import { useLocalize, useHasAccess } from '~/hooks';
 import ScheduleDialog from './ScheduleDialog';
+import { useChatContext } from '~/Providers';
 import ScheduleCard from './ScheduleCard';
 
 export default function SchedulePanel() {
   const localize = useLocalize();
   const headingId = useId();
+  const { conversation } = useChatContext();
   const { data, isLoading, isError, refetch } = useSchedulesQuery();
   const [createOpen, setCreateOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -62,6 +64,7 @@ export default function SchedulePanel() {
             <ScheduleCard
               schedule={schedule}
               consentEnabled={data?.limits.mcpConsent === true}
+              currentConversation={conversation ?? undefined}
               // The raw id is a poor label but an honest one: it only shows for a
               // project outside the loaded pages, and beats claiming no scope.
               projectName={
@@ -136,7 +139,13 @@ export default function SchedulePanel() {
         </PanelFooter>
       )}
 
-      {createOpen && <ScheduleDialog open={createOpen} onOpenChange={setCreateOpen} />}
+      {createOpen && (
+        <ScheduleDialog
+          open={createOpen}
+          onOpenChange={setCreateOpen}
+          currentConversation={conversation ?? undefined}
+        />
+      )}
     </div>
   );
 }
