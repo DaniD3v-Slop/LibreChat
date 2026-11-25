@@ -35,6 +35,11 @@ const DONE_LABEL: Record<'completed' | 'expired', TranslationKeys> = {
   expired: 'com_ui_schedule_expired',
 };
 
+/** A one-time schedule that ran or passed its time has finished, not failed. */
+export const isFinished = (
+  reason: TSchedule['disabledReason'],
+): reason is 'completed' | 'expired' => reason === 'completed' || reason === 'expired';
+
 /**
  * Read in the order the owner would ask: has something stopped it, is it paused,
  * did the last run end badly, and otherwise it is simply running.
@@ -46,8 +51,7 @@ export function scheduleRowState(
   schedule: Pick<TSchedule, 'enabled' | 'disabledReason' | 'lastRun'>,
   localize: LocalizeFunction,
 ): ScheduleRowState {
-  // A one-time schedule that ran or passed its time has finished, not failed.
-  if (schedule.disabledReason === 'completed' || schedule.disabledReason === 'expired') {
+  if (isFinished(schedule.disabledReason)) {
     return { tone: 'paused', label: localize(DONE_LABEL[schedule.disabledReason]) };
   }
   if (schedule.disabledReason != null) {

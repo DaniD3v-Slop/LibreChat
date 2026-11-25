@@ -1,6 +1,6 @@
 import type { TSchedule } from 'librechat-data-provider';
 import type { LocalizeFunction } from '~/common';
-import { scheduleRowState } from '../state';
+import { isFinished, scheduleRowState } from '../state';
 
 const localize = ((key: string) => key) as unknown as LocalizeFunction;
 
@@ -96,5 +96,14 @@ describe('scheduleRowState', () => {
         localize,
       ),
     ).toEqual({ tone: 'error', label: 'com_ui_schedule_paused' });
+  });
+});
+
+describe('isFinished', () => {
+  it('treats only completed and expired as finished, not failed', () => {
+    expect(isFinished('completed')).toBe(true);
+    expect(isFinished('expired')).toBe(true);
+    expect(isFinished('too_many_failures')).toBe(false);
+    expect(isFinished(undefined)).toBe(false);
   });
 });

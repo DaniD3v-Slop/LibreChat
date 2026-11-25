@@ -35,10 +35,10 @@ import {
 import { useLocalize, useHasAccess, useClockFormat, useWeekStart } from '~/hooks';
 import { cn, getMessageTimestamp, rowActionClasses } from '~/utils';
 import ScheduleMCPRecovery from './ScheduleMCPRecovery';
+import { isFinished, scheduleRowState } from './state';
 import { useAgentsMapContext } from '~/Providers';
 import ScheduleDialog from './ScheduleDialog';
 import { describeCadence } from './cadence';
-import { scheduleRowState } from './state';
 import Consent from './Consent';
 
 interface ScheduleCardProps {
@@ -50,15 +50,16 @@ interface ScheduleCardProps {
   projectName?: string | null;
 }
 
-const DISABLED_REASON_LABELS: Record<ScheduleDisabledReason, TranslationKeys> = {
+const DISABLED_REASON_LABELS: Record<
+  Exclude<ScheduleDisabledReason, 'completed' | 'expired'>,
+  TranslationKeys
+> = {
   mcp_reauth_required: 'com_ui_schedule_disabled_mcp_reauth',
   mcp_configuration_missing: 'com_ui_schedule_disabled_mcp_configuration',
   mcp_permission_denied: 'com_ui_schedule_disabled_mcp_permission',
   too_many_failures: 'com_ui_schedule_disabled_too_many_failures',
   agent_deleted: 'com_ui_schedule_disabled_agent_deleted',
   invalid_schedule: 'com_ui_schedule_disabled_invalid',
-  completed: 'com_ui_schedule_completed',
-  expired: 'com_ui_schedule_expired',
   permission_revoked: 'com_ui_schedule_disabled_permission_revoked',
   insufficient_balance: 'com_ui_schedule_disabled_insufficient_balance',
   project_deleted: 'com_ui_schedule_disabled_project_deleted',
@@ -429,7 +430,7 @@ export default function ScheduleCard({
           </div>
           {/* Only what the two lines above cannot say: why the clock stopped, and how
               to get an MCP server back. A healthy schedule shows neither. */}
-          {schedule.disabledReason != null && (
+          {schedule.disabledReason != null && !isFinished(schedule.disabledReason) && (
             <div className="mt-1.5">
               <Chip tone="error">
                 {localize(disabledMCPLabel ?? DISABLED_REASON_LABELS[schedule.disabledReason])}
