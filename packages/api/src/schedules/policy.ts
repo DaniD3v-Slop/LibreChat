@@ -7,7 +7,8 @@ export interface ScheduleLimits {
     /** From then on a never-authorized schedule can no longer use MCP tools. */
     requireAfterMs?: number;
   };
-  maxPerUser: number;
+  /** Omitted means unlimited; an explicit zero prevents creation. */
+  maxPerUser?: number;
   minIntervalMinutes: number;
   autoDisableAfterFailures: number;
   /** Maximum claimed occurrences concurrently passing readiness admission per replica. */
@@ -28,7 +29,6 @@ export interface ScheduleLimits {
 
 export const DEFAULT_SCHEDULE_LIMITS: ScheduleLimits = {
   enabled: true,
-  maxPerUser: 10,
   minIntervalMinutes: 60,
   autoDisableAfterFailures: 5,
   admissionConcurrency: 20,

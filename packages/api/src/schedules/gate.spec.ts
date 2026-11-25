@@ -122,9 +122,9 @@ describe('v1 experimental gate, asserted at real entry points', () => {
   });
 
   it('turns ON for an explicit opt-in', async () => {
-    expect((await makeService({ interfaceConfig: { schedules: true } }).getLimits()).enabled).toBe(
-      true,
-    );
+    const defaults = await makeService({ interfaceConfig: { schedules: true } }).getLimits();
+    expect(defaults.enabled).toBe(true);
+    expect(defaults.maxPerUser).toBeUndefined();
     const tuned = makeService({
       interfaceConfig: {
         schedules: { maxPerUser: 3, admissionConcurrency: 12, mcpPreflightConcurrency: 2 },
